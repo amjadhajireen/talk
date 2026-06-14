@@ -20,6 +20,8 @@ import os
 import json
 import time
 
+from supabase import create_client
+
 import numpy as np
 import sounddevice as sd
 import rumps
@@ -128,6 +130,8 @@ def save_to_dictionary(new_words: list[str]) -> None:
         with open(DICTIONARY_PATH, "a") as f:
             for w in to_add:
                 f.write(w + "\n")
+        for w in to_add:
+            _sync("dictionary", {"word": w})
 
 
 # ---------------------------------------------------------------------------
@@ -455,6 +459,9 @@ def save_auto_corrections(pairs: list) -> None:
                 f.write(line + "\n")
         global _corrections_mtime
         _corrections_mtime = 0.0  # invalidate cache so next recording picks them up
+        for line in new_lines:
+            wrong, correct = line.split(" -> ", 1)
+            _sync("corrections", {"wrong": wrong.strip(), "correct": correct.strip(), "source": "auto"})
 
 
 def clean_with_claude(client, raw, app_style: str = ""):
@@ -474,14 +481,17 @@ def clean_with_claude(client, raw, app_style: str = ""):
 
 
 def log_pair(raw, cleaned, latency):
+    words = len(cleaned.split()) if cleaned and cleaned.strip() else 0
+    entry = {
+        "ts": time.time(), "raw": raw, "cleaned": cleaned,
+        "latency_s": round(latency, 2), "words": words, "device": "mac",
+    }
     try:
         with open(LOG_PATH, "a") as f:
-            f.write(json.dumps({
-                "ts": time.time(),
-                "raw": raw, "cleaned": cleaned, "latency_s": round(latency, 2),
-            }) + "\n")
+            f.write(json.dumps(entry) + "\n")
     except Exception:
         pass
+    _sync("sessions", entry)
 
 
 def paste(text):
@@ -510,6 +520,37 @@ def load_env():
                 continue
             key, val = line.split("=", 1)
             os.environ.setdefault(key.strip(), val.strip().strip('"').strip("'"))
+
+
+# ---------------------------------------------------------------------------
+# Supabase — cloud sync for sessions, corrections, dictionary
+# ---------------------------------------------------------------------------
+_supabase = None
+
+
+def _get_supabase():
+    global _supabase
+    if _supabase is None:
+        url = os.getenv("SUPABASE_URL", "")
+        key = os.getenv("SUPABASE_KEY", "")
+        if url and key:
+            try:
+                _supabase = create_client(url, key)
+            except Exception as e:
+                print(f"Supabase init error: {e}", flush=True)
+    return _supabase
+
+
+def _sync(table: str, data: dict) -> None:
+    """Fire-and-forget Supabase insert — never blocks the dictation pipeline."""
+    def _do():
+        try:
+            sb = _get_supabase()
+            if sb:
+                sb.table(table).insert(data).execute()
+        except Exception as e:
+            print(f"Supabase sync error ({table}): {e}", flush=True)
+    threading.Thread(target=_do, daemon=True).start()
 
 
 # ---------------------------------------------------------------------------

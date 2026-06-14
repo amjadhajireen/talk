@@ -11,17 +11,56 @@ from datetime import date, datetime, timedelta
 LOG_PATH = os.path.join(os.path.dirname(__file__), "talk.log")
 
 
-def load_entries():
-    entries = []
-    if not os.path.exists(LOG_PATH):
-        return entries
-    with open(LOG_PATH) as f:
+def _load_env():
+    path = os.path.join(os.path.dirname(__file__), ".env")
+    if not os.path.exists(path):
+        return
+    with open(path) as f:
         for line in f:
-            try:
-                e = json.loads(line.strip())
-                entries.append(e)
-            except Exception:
-                pass
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+
+def _load_supabase_sessions():
+    """Pull all sessions from Supabase (includes iPhone sessions)."""
+    try:
+        from supabase import create_client
+        url = os.getenv("SUPABASE_URL", "")
+        key = os.getenv("SUPABASE_KEY", "")
+        if not url or not key:
+            return []
+        sb = create_client(url, key)
+        result = sb.table("sessions").select("ts,cleaned,words,device").execute()
+        return result.data or []
+    except Exception as e:
+        print(f"Supabase load error: {e}")
+        return []
+
+
+def load_entries():
+    _load_env()
+    # Local entries keyed by rounded timestamp (dedup with Supabase)
+    seen: set = set()
+    entries = []
+    if os.path.exists(LOG_PATH):
+        with open(LOG_PATH) as f:
+            for line in f:
+                try:
+                    e = json.loads(line.strip())
+                    ts = e.get("ts")
+                    if ts:
+                        key = round(float(ts), 0)
+                        seen.add(key)
+                        entries.append(e)
+                except Exception:
+                    pass
+    # Merge remote sessions (iPhone + any Mac sessions not yet in local log)
+    for e in _load_supabase_sessions():
+        ts = e.get("ts")
+        if ts and round(float(ts), 0) not in seen:
+            entries.append(e)
     return entries
 
 
