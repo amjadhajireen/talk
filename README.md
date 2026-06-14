@@ -1,51 +1,87 @@
 # Talk
 
-A personal AI dictation app for Mac and iPhone. Press a key, speak, and get a clean, punctuated transcript pasted wherever your cursor is — powered by Whisper and Claude.
+A personal AI dictation app for Mac and iPhone. Speak, and get a clean, punctuated transcript pasted wherever your cursor is — powered by Whisper and Claude. Gets smarter the more you use it.
 
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20iOS-black)
 ![Model](https://img.shields.io/badge/whisper-large--v3--turbo-7c3aed)
 ![Claude](https://img.shields.io/badge/claude-haiku--4--5-7c3aed)
+![Sync](https://img.shields.io/badge/sync-supabase-3ecf8e)
 
 ---
 
 ## What it does
 
-- **Hold Right Option** on Mac → speak → release → cleaned text is pasted at your cursor
-- **Tap mic** on iPhone (PWA) → speak → tap stop → cleaned text ready to copy/share
-- Whisper transcribes, Claude cleans: fixes punctuation, removes filler words, applies corrections
-- Learns your vocabulary — proper nouns, brand names, and spelling hints you teach it persist across sessions
-- Stats dashboard shows words dictated, time saved, streak, and peak hour — across both devices
+**Mac** — Hold Right-Option to record (push-to-talk), or double-tap to lock recording on and double-tap again to stop. Cleaned text is pasted at your cursor in whatever app is focused.
+
+**iPhone** — Tap the mic button, speak as long as you want, tap again to stop. Whisper transcribes, Claude cleans, result appears in an editable box ready to copy or share.
+
+Both devices share a Supabase database — corrections learned on one device apply on the other.
+
+---
 
 ## How it works
 
 ```
-Mac:    Right Option held → local Whisper (mlx-whisper) → Claude Haiku cleanup → paste
-iPhone: tap mic → MediaRecorder audio → Groq Whisper → Claude Haiku cleanup → copy/share
-                                               ↑
-                                     same model, same quality
+Mac:    hold/double-tap Right-Option
+          → local Whisper (mlx-whisper, on-device, nothing leaves your Mac)
+          → Claude Haiku cleanup
+          → paste at cursor
+
+iPhone: tap mic → record
+          → MediaRecorder audio → Groq Whisper API (whisper-large-v3-turbo)
+          → Claude Haiku cleanup (Supabase Edge Function)
+          → editable result → copy / share
 ```
 
-Both pipelines share a Supabase database for corrections, vocabulary, and session history — so the app gets smarter on all devices at once.
+---
 
 ## Stack
 
 | Layer | Mac | iPhone |
 |---|---|---|
-| Transcription | `mlx-whisper` (local, on-device) | Groq API (`whisper-large-v3-turbo`) |
-| Cleanup | Claude Haiku via Anthropic API | Claude Haiku via Supabase Edge Function |
+| Transcription | `mlx-whisper` — local, on-device | Groq API — `whisper-large-v3-turbo` |
+| Cleanup | Claude Haiku — Anthropic API | Claude Haiku — Supabase Edge Function |
 | UI | `rumps` menu bar app | Progressive Web App (Safari) |
-| Sync | Supabase (PostgreSQL) | Supabase (PostgreSQL) |
-| Auto-start | LaunchAgent | Installed to iPhone home screen |
+| Cloud sync | Supabase (PostgreSQL) | Supabase (PostgreSQL) |
+| Backend | — | Supabase Edge Functions (Deno/TypeScript) |
+| Auto-start | macOS LaunchAgent | Installed to iPhone home screen |
+
+---
 
 ## Features
 
-- **Word boosting** — custom vocabulary fed as Whisper `initial_prompt` biases transcription toward your terms
-- **Auto-corrections** — `corrections.txt` maps mishearings (`Cloud -> Claude`); Claude learns new ones automatically and syncs them
-- **Spelling hints** — say "kick, K-I-C-K" and it writes `kick`, saving the word to your dictionary
-- **App-aware cleanup** — detects the frontmost app (Slack, email, notes, code) and adjusts formatting style
-- **Self-learning** — when Claude spots a pronunciation-based mishearing, it saves the correction for next time
-- **Stats dashboard** — `python dashboard.py` opens an HTML page with a 7-day chart, streak, and hourly activity heatmap
-- **Rate limiting** — Edge Function enforces 20 requests/hour per IP to prevent API abuse
+### Transcription accuracy
+- **Word boosting** — your vocabulary (`dictionary.txt`) is fed as Whisper's `initial_prompt`, biasing ASR toward your proper nouns and brand names
+- **Spelling hints** — say "kick, K-I-C-K" and it writes `kick` and adds the word to your dictionary for future sessions
+- **App-aware formatting** — detects the frontmost app (Slack, email, Notion, code editor, terminal) and adjusts Claude's output style to match
+
+### Hotkey modes (Mac)
+- **Hold** Right-Option → push-to-talk, transcribes on release
+- **Double-tap** Right-Option → locks recording on; double-tap again to stop and transcribe
+
+### AI writing tools (iPhone)
+- **Cleanup** — removes filler words, fixes punctuation, applies corrections automatically
+- **✨ Enhance** — tap to have Claude restructure the transcript: detects numbered lists, bullet points, paragraph breaks, and run-on sentences
+- **Editable result** — tap anywhere in the result to edit before copying or sharing
+
+### Self-improvement (all devices)
+The app has three learning loops that run automatically:
+
+1. **FIXES protocol** — when Claude corrects a Whisper mishearing (e.g. "cloud" → "Claude"), it appends a `FIXES:` line; Talk saves the pair to `corrections.txt` and applies it on every future recording
+2. **Edit capture** — when you edit the iPhone transcript before copying, the before/after pair is stored in Supabase as a personalised example for Claude
+3. **Dynamic few-shot** — before each cleanup, Claude sees your 5 most recent real edits as examples, calibrating to your exact style over time
+4. **Startup sync** — on every Mac launch, Talk pulls latest corrections and vocabulary from Supabase, so learnings from iPhone immediately apply on Mac
+
+### Stats & history
+- **Stats dashboard** — `python dashboard.py` opens a browser page with 7-day word chart, streak, peak hour heatmap, time saved vs typing
+- **Cross-device stats** — iPhone stats tab shows combined Mac + iPhone session totals from Supabase
+
+### Security
+- **Rate limiting** — Edge Function enforces 20 requests/hour per IP; prevents API cost abuse even if the endpoint is discovered
+- **Single-instance lock** — `/tmp/talk.lock` prevents accidental double-paste from two running instances
+- **Clipboard restore** — paste saves and restores your clipboard so your copied content is never overwritten
+
+---
 
 ## Setup (Mac)
 
@@ -61,8 +97,8 @@ pip install -r requirements.txt
 
 Create `.env`:
 ```
-ANTHROPIC_API_KEY=your_key_here
-SUPABASE_URL=your_supabase_url
+ANTHROPIC_API_KEY=your_anthropic_key
+SUPABASE_URL=your_supabase_project_url
 SUPABASE_KEY=your_supabase_anon_key
 ```
 
@@ -71,7 +107,7 @@ Run:
 python talk.py
 ```
 
-Grant **Accessibility** permission when prompted (System Settings → Privacy & Security → Accessibility → add your Python binary).
+Grant **Accessibility** permission when prompted (System Settings → Privacy & Security → Accessibility → add your Python binary from `.venv/bin/python`).
 
 **Auto-start on login:**
 ```bash
@@ -79,19 +115,31 @@ cp com.amjad.talk.plist ~/Library/LaunchAgents/
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.amjad.talk.plist
 ```
 
+---
+
 ## Setup (iPhone PWA)
 
-The iPhone app is hosted on GitHub Pages and backed by a Supabase Edge Function.
-
 1. Open Safari → `https://amjadhajireen.github.io/talk/`
-2. Tap Share → **Add to Home Screen**
-3. Done — Talk icon on your home screen, no App Store needed
+2. Tap **Share → Add to Home Screen**
+3. Talk icon appears on your home screen — no App Store needed
 
-The Edge Function needs two secrets set in your Supabase dashboard (Settings → Edge Functions → Secrets):
+The Edge Function requires two secrets in your Supabase dashboard (Settings → Edge Functions → Secrets):
 - `ANTHROPIC_API_KEY`
-- `GROQ_API_KEY` (free tier at [console.groq.com](https://console.groq.com))
+- `GROQ_API_KEY` — free at [console.groq.com](https://console.groq.com) (7,200 sec/day free tier)
+
+Deploy the Edge Function:
+```bash
+brew install supabase/tap/supabase
+cd talk
+SUPABASE_ACCESS_TOKEN=your_token supabase link --project-ref your_project_ref
+SUPABASE_ACCESS_TOKEN=your_token supabase functions deploy cleanup --no-verify-jwt
+```
+
+---
 
 ## Supabase schema
+
+Run this in your Supabase SQL Editor:
 
 ```sql
 CREATE TABLE sessions (
@@ -120,6 +168,14 @@ CREATE TABLE rate_limits (
   PRIMARY KEY (ip, hour)
 );
 
+CREATE TABLE edit_corrections (
+  id       BIGSERIAL PRIMARY KEY,
+  ts       FLOAT NOT NULL,
+  original TEXT,
+  edited   TEXT,
+  device   TEXT DEFAULT 'iphone'
+);
+
 CREATE OR REPLACE FUNCTION increment_rate_limit(p_ip TEXT, p_hour BIGINT)
 RETURNS INT LANGUAGE sql AS $$
   INSERT INTO rate_limits (ip, hour, count)
@@ -127,7 +183,16 @@ RETURNS INT LANGUAGE sql AS $$
   ON CONFLICT (ip, hour) DO UPDATE SET count = rate_limits.count + 1
   RETURNING count;
 $$;
+
+-- Disable RLS (personal app, no multi-user auth needed)
+ALTER TABLE sessions         DISABLE ROW LEVEL SECURITY;
+ALTER TABLE corrections      DISABLE ROW LEVEL SECURITY;
+ALTER TABLE dictionary       DISABLE ROW LEVEL SECURITY;
+ALTER TABLE rate_limits      DISABLE ROW LEVEL SECURITY;
+ALTER TABLE edit_corrections DISABLE ROW LEVEL SECURITY;
 ```
+
+---
 
 ## Customisation
 
@@ -135,13 +200,22 @@ $$;
 |---|---|
 | `corrections.txt` | Manual corrections: `wrong -> correct`, one per line |
 | `dictionary.txt` | Known vocabulary for Whisper biasing and Claude spelling reference |
-| `talk.py` → `_APP_STYLE_MAP` | Add apps to the style hint map |
-| `talk.py` → `FEW_SHOT` | Add cleanup examples to improve Claude output |
+| `talk.py` → `_APP_STYLE_MAP` | Map app names to formatting style hints |
+| `talk.py` → `FEW_SHOT` | Static few-shot examples for Claude cleanup |
+| `talk.py` → `WHISPER_HALLUCINATIONS` | Strings to filter as Whisper silence artifacts |
 
-## Stats
+---
+
+## Stats dashboard (Mac)
 
 ```bash
 python dashboard.py
 ```
 
-Opens an HTML dashboard in your browser with words dictated, time saved vs typing, streak, and hourly activity heatmap — combining Mac and iPhone sessions via Supabase.
+Opens an HTML page in your browser showing:
+- Words dictated today / this week / all time
+- Time saved vs typing at 40 WPM
+- 7-day bar chart
+- Streak and peak usage hour
+- Hourly activity heatmap
+- Mac vs iPhone word counts
