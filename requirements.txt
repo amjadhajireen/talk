@@ -1,0 +1,6 @@
+rumps>=0.4.0
+pynput>=1.7.6
+sounddevice>=0.4.6
+numpy>=1.24
+mlx-whisper>=0.4.0
+anthropic>=0.40.0

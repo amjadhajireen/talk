@@ -1,0 +1,12 @@
+# Talk — Whisper correction rules
+# Whisper mishears these words/phrases. Fix them before Claude sees the transcript.
+#
+# Format:  wrong -> correct
+# Matching is case-insensitive and word-boundary aware.
+# Reload is automatic — edit this file and the next recording picks up the changes.
+
+Cloud -> Claude
+Whisper Flow -> WISPR Flow
+Hajreen -> Hajirwen
+Hajirin -> hajireen
+hajirwen -> Hajirwen
