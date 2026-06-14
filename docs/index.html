@@ -85,6 +85,25 @@
     .result-box.done-border   { border-color: var(--accent); }
     .result-box .placeholder  { color: var(--muted); font-size: 15px; }
 
+    #result-textarea {
+      display: none;
+      width: 100%;
+      flex: 1;
+      background: var(--surface);
+      border: 1px solid var(--accent);
+      border-radius: 20px;
+      padding: 18px;
+      font-size: 17px;
+      line-height: 1.6;
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif;
+      resize: none;
+      outline: none;
+      -webkit-overflow-scrolling: touch;
+      -webkit-user-select: text;
+      user-select: text;
+    }
+
     /* recording waveform bars */
     .wave {
       display: flex; align-items: center; gap: 4px;
@@ -229,6 +248,7 @@
     <div class="result-box" id="result-box">
       <span class="placeholder">Tap the mic and start speaking…</span>
     </div>
+    <textarea id="result-textarea" spellcheck="true" autocorrect="on"></textarea>
 
     <div class="mic-section">
       <button class="mic-btn" id="mic-btn" onclick="toggleRecording()">🎙</button>
@@ -332,8 +352,8 @@ async function sendToCleanup(blob, mimeType) {
     const json = await res.json()
     if (!res.ok || json.error) throw new Error(json.error || `Server error ${res.status}`)
     currentCleaned = json.cleaned
-    setResultBox(json.cleaned, 'done-border', true)
     setState('result')
+    showTextarea(json.cleaned)
   } catch (err) {
     currentCleaned = ''
     setResultBox(`<span style="color:#ef4444;font-size:13px">Error: ${err.message}</span>`, '')
@@ -343,11 +363,20 @@ async function sendToCleanup(blob, mimeType) {
 }
 
 // ── UI ─────────────────────────────────────────────────────────────
-function setResultBox(html, borderClass, editable = false) {
+function setResultBox(html, borderClass) {
   const box = document.getElementById('result-box')
   box.innerHTML = html
   box.className = 'result-box' + (borderClass ? ' ' + borderClass : '')
-  box.contentEditable = editable ? 'true' : 'false'
+  box.style.display = ''
+  document.getElementById('result-textarea').style.display = 'none'
+}
+
+function showTextarea(text) {
+  const box = document.getElementById('result-box')
+  const ta  = document.getElementById('result-textarea')
+  box.style.display = 'none'
+  ta.style.display = 'block'
+  ta.value = text
 }
 
 function setState(s) {
@@ -389,7 +418,7 @@ function setState(s) {
 }
 
 function getResultText() {
-  return document.getElementById('result-box').innerText.trim()
+  return document.getElementById('result-textarea').value.trim()
 }
 
 function copyResult() {
@@ -404,8 +433,9 @@ function shareResult() {
 }
 
 function resetDictate() {
-  setState('idle')
   currentCleaned = ''
+  document.getElementById('result-textarea').value = ''
+  setState('idle')
   setResultBox('<span class="placeholder">Tap the mic and start speaking…</span>', '')
 }
 
