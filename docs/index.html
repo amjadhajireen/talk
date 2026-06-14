@@ -302,7 +302,7 @@ async function startRecording() {
     sendToCleanup(blob, type)
   }
 
-  mediaRecorder.start()
+  mediaRecorder.start(250) // collect chunks every 250ms — prevents iOS auto-stop on silence
   setState('recording')
 }
 
@@ -332,7 +332,7 @@ async function sendToCleanup(blob, mimeType) {
     const json = await res.json()
     if (!res.ok || json.error) throw new Error(json.error || `Server error ${res.status}`)
     currentCleaned = json.cleaned
-    setResultBox(json.cleaned, 'done-border')
+    setResultBox(json.cleaned, 'done-border', true)
     setState('result')
   } catch (err) {
     currentCleaned = ''
@@ -343,10 +343,11 @@ async function sendToCleanup(blob, mimeType) {
 }
 
 // ── UI ─────────────────────────────────────────────────────────────
-function setResultBox(html, borderClass) {
+function setResultBox(html, borderClass, editable = false) {
   const box = document.getElementById('result-box')
   box.innerHTML = html
   box.className = 'result-box' + (borderClass ? ' ' + borderClass : '')
+  box.contentEditable = editable ? 'true' : 'false'
 }
 
 function setState(s) {
@@ -387,14 +388,18 @@ function setState(s) {
   }
 }
 
+function getResultText() {
+  return document.getElementById('result-box').innerText.trim()
+}
+
 function copyResult() {
-  navigator.clipboard?.writeText(currentCleaned)
+  navigator.clipboard?.writeText(getResultText())
     .then(() => showToast('Copied!'))
     .catch(() => showToast('Copy failed'))
 }
 
 function shareResult() {
-  if (navigator.share) navigator.share({ text: currentCleaned }).catch(() => {})
+  if (navigator.share) navigator.share({ text: getResultText() }).catch(() => {})
   else copyResult()
 }
 
