@@ -61,11 +61,21 @@ Deno.serve(async (req) => {
       return json({ error: 'Rate limit exceeded. Try again next hour.' }, 429)
     }
 
-    // Pull corrections and dictionary
-    const [{ data: corrections }, { data: dictionary }] = await Promise.all([
+    // Pull corrections, dictionary, and recent user edits for personalised few-shot
+    const [{ data: corrections }, { data: dictionary }, { data: editHistory }] = await Promise.all([
       sb.from('corrections').select('wrong, correct'),
       sb.from('dictionary').select('word'),
+      sb.from('edit_corrections').select('original, edited').order('ts', { ascending: false }).limit(8),
     ])
+
+    // Build dynamic few-shot from actual user edits (most recent first, deduped)
+    const dynamicShots = (editHistory ?? [])
+      .filter((e: any) => e.original && e.edited && e.original.trim() !== e.edited.trim())
+      .slice(0, 5)
+      .flatMap((e: any) => ([
+        { role: 'user',      content: `<transcript>${e.original.trim()}</transcript>` },
+        { role: 'assistant', content: e.edited.trim() },
+      ]))
 
     const terms = (dictionary ?? []).map((d: any) => d.word).join(', ') || 'Phoenix, Suave, Amjad, Sidd'
 
@@ -104,6 +114,20 @@ Deno.serve(async (req) => {
       rawTranscript = text?.trim() || ''
     } else {
       const body = await req.json()
+
+      // Learn mode — store user edit pair for future few-shot personalisation
+      if (body.mode === 'learn') {
+        const { original, edited } = body
+        if (original && edited && original.trim() !== edited.trim()) {
+          await sb.from('edit_corrections').insert({
+            ts: Date.now() / 1000,
+            original: original.trim(),
+            edited: edited.trim(),
+            device: 'iphone',
+          })
+        }
+        return json({ ok: true })
+      }
 
       // Enhancement mode — restructure and improve writing quality
       if (body.mode === 'enhance') {
@@ -153,7 +177,7 @@ Rules:
       model: 'claude-haiku-4-5',
       max_tokens: 2000,
       system,
-      messages: [...FEW_SHOT, { role: 'user', content: `<transcript>${raw}</transcript>` }] as any,
+      messages: [...FEW_SHOT, ...dynamicShots, { role: 'user', content: `<transcript>${raw}</transcript>` }] as any,
     })
 
     let response = msg.content[0].type === 'text' ? msg.content[0].text.trim() : raw

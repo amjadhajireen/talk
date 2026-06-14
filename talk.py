@@ -554,6 +554,64 @@ def _sync(table: str, data: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Startup sync — pull Supabase corrections/dictionary into local files
+# ---------------------------------------------------------------------------
+def _startup_sync():
+    """Pull corrections and dictionary from Supabase on launch.
+
+    Ensures learnings from iPhone (auto-corrections, spelled words) are
+    immediately available on Mac without manual file editing.
+    """
+    try:
+        sb = _get_supabase()
+        if not sb:
+            return
+
+        # Merge remote corrections into corrections.txt
+        result = sb.table("corrections").select("wrong, correct").execute()
+        if result.data:
+            existing: set = set()
+            if os.path.exists(CORRECTIONS_PATH):
+                with open(CORRECTIONS_PATH) as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#") and "->" in line:
+                            existing.add(line.split("->", 1)[0].strip().lower())
+            new_lines = [
+                f"{r['wrong']} -> {r['correct']}"
+                for r in result.data
+                if r["wrong"].lower() not in existing
+            ]
+            if new_lines:
+                with open(CORRECTIONS_PATH, "a") as f:
+                    for line in new_lines:
+                        f.write(line + "\n")
+                global _corrections_mtime
+                _corrections_mtime = 0.0
+                print(f"Startup sync: +{len(new_lines)} corrections", flush=True)
+
+        # Merge remote dictionary into dictionary.txt
+        dresult = sb.table("dictionary").select("word").execute()
+        if dresult.data:
+            existing_words: set = set()
+            if os.path.exists(DICTIONARY_PATH):
+                with open(DICTIONARY_PATH) as f:
+                    existing_words = {l.strip().lower() for l in f if l.strip()}
+            new_words = [
+                r["word"] for r in dresult.data
+                if r["word"].lower() not in existing_words
+            ]
+            if new_words:
+                with open(DICTIONARY_PATH, "a") as f:
+                    for w in new_words:
+                        f.write(w + "\n")
+                print(f"Startup sync: +{len(new_words)} dictionary words", flush=True)
+
+    except Exception as e:
+        print(f"Startup sync error: {e}", flush=True)
+
+
+# ---------------------------------------------------------------------------
 # Menu-bar app
 # ---------------------------------------------------------------------------
 class TalkApp(rumps.App):
@@ -574,6 +632,7 @@ class TalkApp(rumps.App):
         self._hold_timer = None
         print("  hotkey listener...", flush=True)
         self._start_hotkey_listener()
+        threading.Thread(target=_startup_sync, daemon=True).start()
         print("  __init__ done", flush=True)
 
     @rumps.clicked("📊 View Stats")

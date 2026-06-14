@@ -451,6 +451,7 @@ async function enhanceResult() {
     })
     const json = await res.json()
     if (!res.ok || json.error) throw new Error(json.error || `Server error ${res.status}`)
+    currentCleaned = json.enhanced  // track latest AI output so edits after enhance are learned
     document.getElementById('result-textarea').value = json.enhanced
     showToast('Enhanced!')
   } catch (err) {
@@ -461,13 +462,30 @@ async function enhanceResult() {
   }
 }
 
+function learnFromEdit() {
+  const final = getResultText()
+  if (final && currentCleaned && final !== currentCleaned) {
+    fetch(CLEANUP_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${SUPABASE_KEY}`,
+        'apikey': SUPABASE_KEY,
+      },
+      body: JSON.stringify({ mode: 'learn', original: currentCleaned, edited: final }),
+    }).catch(() => {})
+  }
+}
+
 function copyResult() {
+  learnFromEdit()
   navigator.clipboard?.writeText(getResultText())
     .then(() => showToast('Copied!'))
     .catch(() => showToast('Copy failed'))
 }
 
 function shareResult() {
+  learnFromEdit()
   if (navigator.share) navigator.share({ text: getResultText() }).catch(() => {})
   else copyResult()
 }
