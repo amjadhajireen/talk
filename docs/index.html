@@ -356,6 +356,7 @@ async function sendToCleanup(blob, mimeType) {
     showTextarea(json.cleaned)
   } catch (err) {
     currentCleaned = ''
+    document.getElementById('result-textarea').value = ''
     setResultBox(`<span style="color:#ef4444;font-size:13px">Error: ${err.message}</span>`, '')
     setState('result')
     showToast(err.message)

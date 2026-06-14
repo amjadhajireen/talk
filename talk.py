@@ -594,7 +594,8 @@ class TalkApp(rumps.App):
             if self.recorder.stream:
                 audio = self.recorder.stop()
                 self.busy = True
-                threading.Thread(target=self._process, args=(audio,), daemon=True).start()
+                app_style = get_app_style_hint(get_active_app_name())
+                threading.Thread(target=self._process, args=(audio, app_style), daemon=True).start()
 
         def on_press(key):
             if key != PTT_KEY:
@@ -620,8 +621,9 @@ class TalkApp(rumps.App):
                 if self._hold_timer is not None:
                     self._hold_timer.cancel()
                     self._hold_timer = None
-                self._locked = True
-                _do_start()
+                if not self.recorder.stream and not self.busy:
+                    self._locked = True
+                    _do_start()
 
             else:
                 # First press — wait HOLD_DELAY before starting, to allow double-tap
@@ -655,12 +657,10 @@ class TalkApp(rumps.App):
         listener.daemon = True
         listener.start()
 
-    def _process(self, audio):
+    def _process(self, audio, app_style: str = ""):
         try:
             if audio is None or len(audio) < SAMPLE_RATE * MIN_SECONDS:
                 return
-            # Capture frontmost app before we do anything — user is still in their target window.
-            app_style = get_app_style_hint(get_active_app_name())
             self.title = "🔊"
             t0 = time.time()
             raw = transcribe(audio)
