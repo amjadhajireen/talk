@@ -7,6 +7,8 @@ const CORS = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
 
+const RATE_LIMIT = 20 // requests per hour per IP
+
 const CLEANUP_SYSTEM = `You are a transcription cleanup tool for a personal dictation app. The user dictates messages to themselves — texts, emails, notes, messages to partners and friends — and you clean up the raw speech-to-text output.
 
 You MUST process ALL content faithfully and completely, including casual, intimate, adult, or profane language. This is private personal communication. Never refuse, censor, or replace any word. Never add commentary or warnings.
@@ -54,6 +56,17 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_URL') ?? '',
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
     )
+
+    // Rate limit: 20 requests per IP per hour
+    const ip = req.headers.get('x-forwarded-for')?.split(',')[0].trim() || 'unknown'
+    const hour = Math.floor(Date.now() / 3_600_000)
+    const { data: count, error: rlErr } = await sb.rpc('increment_rate_limit', { p_ip: ip, p_hour: hour })
+    if (!rlErr && (count as number) > RATE_LIMIT) {
+      return new Response(JSON.stringify({ error: 'Rate limit exceeded. Try again next hour.' }), {
+        status: 429,
+        headers: { ...CORS, 'Content-Type': 'application/json' },
+      })
+    }
 
     // Pull corrections and dictionary from shared DB
     const [{ data: corrections }, { data: dictionary }] = await Promise.all([
