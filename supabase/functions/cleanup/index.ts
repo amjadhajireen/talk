@@ -103,8 +103,37 @@ Deno.serve(async (req) => {
       const { text } = await groqRes.json()
       rawTranscript = text?.trim() || ''
     } else {
-      // JSON path (text transcript passed directly)
       const body = await req.json()
+
+      // Enhancement mode — restructure and improve writing quality
+      if (body.mode === 'enhance') {
+        const text = body.text?.trim() || ''
+        if (!text) return json({ enhanced: '' })
+
+        const enhanceSystem = `You are a writing enhancer for a personal dictation app. The user has spoken and their speech has been transcribed. Improve the structure, formatting, and clarity of the text.
+
+Rules:
+- If the text contains enumerated items ("first...", "second...", "one is...", "two is...", "1.", "number one", etc.), reformat them as a clean numbered list.
+- If items are loosely joined with "and", "also", "plus", "another thing", reformat as bullet points.
+- Split long run-on sentences into shorter, clearer ones.
+- Add paragraph breaks where the topic shifts.
+- Improve word choice where obviously awkward, but keep the user's voice and meaning.
+- Do NOT add new information, opinions, or anything not present in the original.
+- Do NOT remove any content — only restructure and clarify.
+- Output ONLY the enhanced text. No preamble, no commentary.`
+
+        const anthropic = new Anthropic({ apiKey: Deno.env.get('ANTHROPIC_API_KEY')! })
+        const msg = await anthropic.messages.create({
+          model: 'claude-haiku-4-5',
+          max_tokens: 2000,
+          system: enhanceSystem,
+          messages: [{ role: 'user', content: text }],
+        })
+        const enhanced = msg.content[0].type === 'text' ? msg.content[0].text.trim() : text
+        return json({ enhanced })
+      }
+
+      // Standard cleanup path (text transcript passed directly)
       rawTranscript = body.transcript?.trim() || ''
     }
 
