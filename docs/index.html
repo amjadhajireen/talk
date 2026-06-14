@@ -37,7 +37,6 @@
       user-select: none;
     }
 
-    /* ── Header ── */
     .header {
       padding: calc(var(--safe-t) + 14px) 24px 14px;
       display: flex;
@@ -54,11 +53,9 @@
     }
     .status-dot.live { background: var(--green); box-shadow: 0 0 6px var(--green); }
 
-    /* ── Screens ── */
     .screen { display: none; flex: 1; flex-direction: column; overflow: hidden; }
     .screen.active { display: flex; }
 
-    /* ── Dictate screen ── */
     .dictate-body {
       flex: 1;
       display: flex;
@@ -87,9 +84,26 @@
     .result-box.active-border { border-color: var(--red); }
     .result-box.done-border   { border-color: var(--accent); }
     .result-box .placeholder  { color: var(--muted); font-size: 15px; }
-    .result-box .interim      { color: var(--muted); }
 
-    /* ── Mic button ── */
+    /* recording waveform bars */
+    .wave {
+      display: flex; align-items: center; gap: 4px;
+      height: 32px; margin-bottom: 4px;
+    }
+    .wave span {
+      display: inline-block; width: 4px; border-radius: 2px;
+      background: var(--red); animation: wave 1s ease-in-out infinite;
+    }
+    .wave span:nth-child(1) { animation-delay: 0s;    height: 10px; }
+    .wave span:nth-child(2) { animation-delay: 0.15s; height: 22px; }
+    .wave span:nth-child(3) { animation-delay: 0.3s;  height: 32px; }
+    .wave span:nth-child(4) { animation-delay: 0.15s; height: 22px; }
+    .wave span:nth-child(5) { animation-delay: 0s;    height: 10px; }
+    @keyframes wave {
+      0%,100% { transform: scaleY(0.4); }
+      50%      { transform: scaleY(1); }
+    }
+
     .mic-section {
       display: flex;
       flex-direction: column;
@@ -124,7 +138,6 @@
     }
     .mic-hint { font-size: 13px; color: var(--muted); }
 
-    /* ── Action row ── */
     .actions {
       display: flex; gap: 10px; width: 100%; flex-shrink: 0;
     }
@@ -142,7 +155,6 @@
     .act-btn.primary { background: var(--accent); border-color: var(--accent); }
     .act-btn.ghost   { color: var(--muted); }
 
-    /* ── Stats screen ── */
     .stats-body {
       flex: 1; overflow-y: auto; padding: 16px 20px;
       -webkit-overflow-scrolling: touch;
@@ -171,7 +183,6 @@
     .badge-iphone { background: rgba(34,197,94,0.2);  color: #4ade80; }
     .loading-stats { color: var(--muted); text-align: center; padding: 48px 0; font-size: 15px; }
 
-    /* ── Bottom nav ── */
     .bottom-nav {
       display: flex;
       background: var(--surface);
@@ -189,7 +200,6 @@
     .nav-btn .icon { font-size: 22px; }
     .nav-btn.active { color: var(--accent); }
 
-    /* ── Toast ── */
     .toast {
       position: fixed;
       bottom: calc(72px + var(--safe-b) + 12px);
@@ -201,12 +211,6 @@
       white-space: nowrap; pointer-events: none; z-index: 99;
     }
     .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
-
-    /* ── No-support banner ── */
-    .no-support-msg {
-      text-align: center; padding: 32px 24px; color: var(--muted); font-size: 15px; line-height: 1.6;
-    }
-    .no-support-msg strong { color: var(--text); display: block; font-size: 18px; margin-bottom: 8px; }
   </style>
 </head>
 <body>
@@ -219,7 +223,6 @@
   <div class="status-dot" id="dot"></div>
 </div>
 
-<!-- DICTATE -->
 <div class="screen active" id="screen-dictate">
   <div class="dictate-body">
 
@@ -241,7 +244,6 @@
   </div>
 </div>
 
-<!-- STATS -->
 <div class="screen" id="screen-stats">
   <div class="stats-body" id="stats-body">
     <div class="loading-stats">Loading stats…</div>
@@ -264,76 +266,68 @@ const CLEANUP_URL  = 'https://xpidypwcpavjrgjjbauk.supabase.co/functions/v1/clea
 const SUPABASE_URL = 'https://xpidypwcpavjrgjjbauk.supabase.co'
 const SUPABASE_KEY = 'sb_publishable_wERL6iWdLSiFWg1TBJtfuw_EGPRc6e4'
 
-// ── State ──────────────────────────────────────────────────────────
-let state = 'idle'   // idle | recording | processing | result
-let recognition = null
-let currentTranscript = ''
-let currentCleaned    = ''
+let state = 'idle'
+let mediaRecorder = null
+let audioChunks   = []
+let currentCleaned = ''
+let timerInterval  = null
+let recSeconds     = 0
 
-// ── Speech Recognition ─────────────────────────────────────────────
-const SR = window.SpeechRecognition || window.webkitSpeechRecognition
-
+// ── Recording ──────────────────────────────────────────────────────
 function toggleRecording() {
-  if (!SR) {
-    document.getElementById('result-box').innerHTML =
-      '<div class="no-support-msg"><strong>Not supported</strong>Use Safari on iOS 15+ or Chrome on Android.</div>'
-    return
-  }
   if (state === 'idle' || state === 'result') startRecording()
   else if (state === 'recording') stopRecording()
 }
 
-function startRecording() {
+async function startRecording() {
+  let stream
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+  } catch (e) {
+    showToast('Microphone access denied')
+    return
+  }
+
+  // Pick the best supported MIME type (mp4 for iOS Safari, webm for others)
+  const mimeType = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm', 'audio/ogg']
+    .find(t => MediaRecorder.isTypeSupported(t)) || ''
+
+  audioChunks = []
+  mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : {})
+  mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data) }
+  mediaRecorder.onstop = () => {
+    stream.getTracks().forEach(t => t.stop())
+    const type = mediaRecorder.mimeType || 'audio/mp4'
+    const blob = new Blob(audioChunks, { type })
+    sendToCleanup(blob, type)
+  }
+
+  mediaRecorder.start()
   setState('recording')
-  currentTranscript = ''
-  setResultBox('<span style="color:#444">Listening…</span>', '')
-
-  recognition = new SR()
-  recognition.lang = 'en-US'
-  recognition.interimResults = true
-  recognition.continuous = false
-  recognition.maxAlternatives = 1
-
-  recognition.onresult = (e) => {
-    let final = '', interim = ''
-    for (const r of e.results) {
-      if (r.isFinal) final += r[0].transcript + ' '
-      else interim += r[0].transcript
-    }
-    currentTranscript = (currentTranscript + final).trim()
-    const display = currentTranscript + (interim ? ` <span class="interim">${interim}</span>` : '')
-    setResultBox(display || '<span style="color:#444">Listening…</span>', 'active-border')
-  }
-
-  recognition.onerror = (e) => {
-    if (e.error === 'no-speech') { stopRecording(); return }
-    setState('idle')
-    showToast('Mic error: ' + e.error)
-  }
-
-  recognition.onend = () => { if (state === 'recording') stopRecording() }
-  recognition.start()
 }
 
 function stopRecording() {
-  if (recognition) { try { recognition.stop() } catch (_) {} recognition = null }
-  if (!currentTranscript.trim()) { setState('idle'); return }
-  cleanup(currentTranscript)
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    mediaRecorder.stop()
+    setState('processing')
+  }
 }
 
-async function cleanup(transcript) {
-  setState('processing')
-  setResultBox(transcript, '')
+async function sendToCleanup(blob, mimeType) {
+  const ext = mimeType.includes('mp4') ? 'm4a'
+             : mimeType.includes('ogg') ? 'ogg' : 'webm'
+
+  const form = new FormData()
+  form.append('audio', blob, `recording.${ext}`)
 
   try {
     const res = await fetch(CLEANUP_URL, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
         'Authorization': `Bearer ${SUPABASE_KEY}`,
         'apikey': SUPABASE_KEY,
       },
-      body: JSON.stringify({ transcript }),
+      body: form,
     })
     const json = await res.json()
     if (!res.ok || json.error) throw new Error(json.error || `Server error ${res.status}`)
@@ -341,20 +335,56 @@ async function cleanup(transcript) {
     setResultBox(json.cleaned, 'done-border')
     setState('result')
   } catch (err) {
-    currentCleaned = transcript
-    setResultBox(
-      `<span style="color:#ef4444;font-size:13px">Cleanup failed — showing raw transcript</span><br><br>${transcript}`,
-      ''
-    )
+    currentCleaned = ''
+    setResultBox(`<span style="color:#ef4444;font-size:13px">Error: ${err.message}</span>`, '')
     setState('result')
     showToast(err.message)
   }
 }
 
+// ── UI ─────────────────────────────────────────────────────────────
 function setResultBox(html, borderClass) {
   const box = document.getElementById('result-box')
   box.innerHTML = html
   box.className = 'result-box' + (borderClass ? ' ' + borderClass : '')
+}
+
+function setState(s) {
+  state = s
+  const btn     = document.getElementById('mic-btn')
+  const hint    = document.getElementById('mic-hint')
+  const actions = document.getElementById('actions')
+  const dot     = document.getElementById('dot')
+
+  btn.className = 'mic-btn'
+  actions.className = 'actions hidden'
+  dot.className = 'status-dot'
+  clearInterval(timerInterval)
+
+  if (s === 'idle') {
+    btn.textContent = '🎙'
+    hint.textContent = 'Tap to record'
+  } else if (s === 'recording') {
+    btn.classList.add('rec'); btn.textContent = '⏹'
+    dot.classList.add('live')
+    recSeconds = 0
+    setResultBox('<div class="wave"><span></span><span></span><span></span><span></span><span></span></div><span style="color:#555;font-size:14px">Recording…</span>', 'active-border')
+    timerInterval = setInterval(() => {
+      recSeconds++
+      const m = Math.floor(recSeconds / 60)
+      const s = recSeconds % 60
+      hint.textContent = `${m}:${String(s).padStart(2,'0')} · tap to stop`
+    }, 1000)
+    hint.textContent = '0:00 · tap to stop'
+  } else if (s === 'processing') {
+    btn.classList.add('proc'); btn.textContent = '✨'
+    hint.textContent = 'Transcribing with Whisper…'
+    setResultBox('<span style="color:#444">Transcribing…</span>', '')
+  } else if (s === 'result') {
+    btn.textContent = '🎙'
+    hint.textContent = 'Tap to record again'
+    actions.className = 'actions'
+  }
 }
 
 function copyResult() {
@@ -370,37 +400,11 @@ function shareResult() {
 
 function resetDictate() {
   setState('idle')
-  currentTranscript = currentCleaned = ''
+  currentCleaned = ''
   setResultBox('<span class="placeholder">Tap the mic and start speaking…</span>', '')
 }
 
-// ── UI State machine ────────────────────────────────────────────────
-function setState(s) {
-  state = s
-  const btn     = document.getElementById('mic-btn')
-  const hint    = document.getElementById('mic-hint')
-  const actions = document.getElementById('actions')
-  const dot     = document.getElementById('dot')
-
-  btn.className = 'mic-btn'
-  actions.className = 'actions hidden'
-  dot.className = 'status-dot'
-
-  if (s === 'idle') {
-    btn.textContent = '🎙'; hint.textContent = 'Tap to record'
-  } else if (s === 'recording') {
-    btn.classList.add('rec'); btn.textContent = '⏹'
-    hint.textContent = 'Tap to stop'; dot.classList.add('live')
-  } else if (s === 'processing') {
-    btn.classList.add('proc'); btn.textContent = '✨'
-    hint.textContent = 'Cleaning up…'
-  } else if (s === 'result') {
-    btn.textContent = '🎙'; hint.textContent = 'Tap to record again'
-    actions.className = 'actions'
-  }
-}
-
-// ── Navigation ──────────────────────────────────────────────────────
+// ── Navigation ─────────────────────────────────────────────────────
 function showScreen(name) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'))
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'))
@@ -420,10 +424,9 @@ async function loadStats() {
     )
     const rows = await res.json()
 
-    const now   = Date.now() / 1000
     const today = new Date(); today.setHours(0,0,0,0)
-    const todayTs   = today.getTime() / 1000
-    const weekTs    = todayTs - 6 * 86400
+    const todayTs = today.getTime() / 1000
+    const weekTs  = todayTs - 6 * 86400
 
     let wToday = 0, wWeek = 0, wAll = 0, wMac = 0, wPhone = 0
     let sToday = 0, sAll = rows.length
@@ -432,8 +435,8 @@ async function loadStats() {
       const w = r.words || 0
       wAll += w
       if (r.device === 'iphone') wPhone += w; else wMac += w
-      if (r.ts >= todayTs)  { wToday += w; sToday++ }
-      if (r.ts >= weekTs)   { wWeek  += w }
+      if (r.ts >= todayTs) { wToday += w; sToday++ }
+      if (r.ts >= weekTs)  { wWeek  += w }
     }
 
     const fmt    = n => n.toLocaleString()
@@ -450,7 +453,6 @@ async function loadStats() {
         <div class="row"><span>This week</span><span>${fmt(wWeek)}</span></div>
         <div class="row"><span>All time</span><span>${fmt(wAll)}</span></div>
       </div>
-
       <div class="card">
         <div class="card-label">Time Saved</div>
         <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:12px">
@@ -458,7 +460,6 @@ async function loadStats() {
         </div>
         <div class="row"><span style="color:#333;font-size:12px">vs typing at 40 WPM</span><span></span></div>
       </div>
-
       <div class="card">
         <div class="card-label">Sessions</div>
         <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:12px">
@@ -466,22 +467,15 @@ async function loadStats() {
           <span class="big-unit">today</span>
         </div>
         <div class="row"><span>Total</span><span>${fmt(sAll)}</span></div>
-        <div class="row">
-          <span>Mac</span>
-          <span><span class="badge badge-mac">${fmt(wMac)} words</span></span>
-        </div>
-        <div class="row">
-          <span>iPhone</span>
-          <span><span class="badge badge-iphone">${fmt(wPhone)} words</span></span>
-        </div>
-      </div>
-    `
+        <div class="row"><span>Mac</span><span><span class="badge badge-mac">${fmt(wMac)} words</span></span></div>
+        <div class="row"><span>iPhone</span><span><span class="badge badge-iphone">${fmt(wPhone)} words</span></span></div>
+      </div>`
   } catch (e) {
     body.innerHTML = `<div class="loading-stats" style="color:#ef4444">Could not load stats<br><small>${e.message}</small></div>`
   }
 }
 
-// ── Toast ────────────────────────────────────────────────────────────
+// ── Toast ───────────────────────────────────────────────────────────
 function showToast(msg) {
   const t = document.getElementById('toast')
   t.textContent = msg; t.classList.add('show')

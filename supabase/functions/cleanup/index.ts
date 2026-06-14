@@ -44,14 +44,10 @@ const FEW_SHOT = [
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
 
-  try {
-    const { transcript } = await req.json()
-    if (!transcript?.trim()) {
-      return new Response(JSON.stringify({ cleaned: '' }), {
-        headers: { ...CORS, 'Content-Type': 'application/json' },
-      })
-    }
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { ...CORS, 'Content-Type': 'application/json' } })
 
+  try {
     const sb = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
@@ -62,28 +58,67 @@ Deno.serve(async (req) => {
     const hour = Math.floor(Date.now() / 3_600_000)
     const { data: count, error: rlErr } = await sb.rpc('increment_rate_limit', { p_ip: ip, p_hour: hour })
     if (!rlErr && (count as number) > RATE_LIMIT) {
-      return new Response(JSON.stringify({ error: 'Rate limit exceeded. Try again next hour.' }), {
-        status: 429,
-        headers: { ...CORS, 'Content-Type': 'application/json' },
-      })
+      return json({ error: 'Rate limit exceeded. Try again next hour.' }, 429)
     }
 
-    // Pull corrections and dictionary from shared DB
+    // Pull corrections and dictionary
     const [{ data: corrections }, { data: dictionary }] = await Promise.all([
       sb.from('corrections').select('wrong, correct'),
       sb.from('dictionary').select('word'),
     ])
 
-    // Apply known corrections to the raw transcript
-    let raw = transcript
+    const terms = (dictionary ?? []).map((d: any) => d.word).join(', ') || 'Phoenix, Suave, Amjad, Sidd'
+
+    // ── Transcription ──────────────────────────────────────────────
+    let rawTranscript: string
+
+    const contentType = req.headers.get('content-type') || ''
+
+    if (contentType.includes('multipart/form-data')) {
+      // Audio upload — transcribe with Groq Whisper (same model as Mac)
+      const formData = await req.formData()
+      const audioFile = formData.get('audio') as File
+      if (!audioFile) return json({ error: 'No audio field in form data' }, 400)
+
+      const vocab = (dictionary ?? []).map((d: any) => d.word).join(', ')
+      const whisperPrompt = vocab
+        ? `This is a personal voice note mentioning ${vocab}.`
+        : 'This is a personal voice note.'
+
+      const groqForm = new FormData()
+      groqForm.append('file', audioFile)
+      groqForm.append('model', 'whisper-large-v3-turbo')
+      groqForm.append('language', 'en')
+      groqForm.append('prompt', whisperPrompt)
+
+      const groqRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${Deno.env.get('GROQ_API_KEY')}` },
+        body: groqForm,
+      })
+      if (!groqRes.ok) {
+        const err = await groqRes.text()
+        throw new Error(`Whisper transcription failed: ${err}`)
+      }
+      const { text } = await groqRes.json()
+      rawTranscript = text?.trim() || ''
+    } else {
+      // JSON path (text transcript passed directly)
+      const body = await req.json()
+      rawTranscript = body.transcript?.trim() || ''
+    }
+
+    if (!rawTranscript) return json({ cleaned: '' })
+
+    // Apply known corrections
+    let raw = rawTranscript
     for (const row of (corrections ?? [])) {
       const escaped = row.wrong.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
       raw = raw.replace(new RegExp(`\\b${escaped}\\b`, 'gi'), row.correct)
     }
 
-    const terms = (dictionary ?? []).map((d: any) => d.word).join(', ') || 'Phoenix, Suave, Amjad, Sidd'
+    // ── Claude cleanup ─────────────────────────────────────────────
     const system = CLEANUP_SYSTEM.replace('{terms}', terms)
-
     const anthropic = new Anthropic({ apiKey: Deno.env.get('ANTHROPIC_API_KEY')! })
     const msg = await anthropic.messages.create({
       model: 'claude-haiku-4-5',
@@ -94,7 +129,7 @@ Deno.serve(async (req) => {
 
     let response = msg.content[0].type === 'text' ? msg.content[0].text.trim() : raw
 
-    // Parse FIXES and persist new corrections back to Supabase
+    // Parse FIXES and persist
     let cleaned = response
     if (response.includes('\nFIXES:')) {
       const [textPart, fixesPart] = response.split('\nFIXES:')
@@ -114,20 +149,15 @@ Deno.serve(async (req) => {
     const words = cleaned.split(/\s+/).filter(Boolean).length
     await sb.from('sessions').insert({
       ts: Date.now() / 1000,
-      raw: transcript,
+      raw: rawTranscript,
       cleaned,
       words,
       device: 'iphone',
     })
 
-    return new Response(JSON.stringify({ cleaned }), {
-      headers: { ...CORS, 'Content-Type': 'application/json' },
-    })
+    return json({ cleaned })
   } catch (err: any) {
     console.error(err)
-    return new Response(JSON.stringify({ error: err.message }), {
-      status: 500,
-      headers: { ...CORS, 'Content-Type': 'application/json' },
-    })
+    return json({ error: err.message }, 500)
   }
 })
