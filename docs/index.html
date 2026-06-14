@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="Talk">
+  <title>Talk</title>
+  <link rel="manifest" href="manifest.json">
+  <style>
+    :root {
+      --bg: #0d0d0d;
+      --surface: #181818;
+      --border: #252525;
+      --text: #e8e8e8;
+      --muted: #555;
+      --accent: #7c3aed;
+      --accent-dim: rgba(124,58,237,0.15);
+      --red: #ef4444;
+      --red-dim: rgba(239,68,68,0.15);
+      --green: #22c55e;
+      --safe-t: env(safe-area-inset-top, 0px);
+      --safe-b: env(safe-area-inset-bottom, 0px);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif;
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+
+    /* ── Header ── */
+    .header {
+      padding: calc(var(--safe-t) + 14px) 24px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .header-left h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.3px; }
+    .header-left p  { font-size: 12px; color: var(--muted); margin-top: 1px; }
+    .status-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--muted); transition: background 0.3s;
+    }
+    .status-dot.live { background: var(--green); box-shadow: 0 0 6px var(--green); }
+
+    /* ── Screens ── */
+    .screen { display: none; flex: 1; flex-direction: column; overflow: hidden; }
+    .screen.active { display: flex; }
+
+    /* ── Dictate screen ── */
+    .dictate-body {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 24px 24px 16px;
+      gap: 20px;
+      overflow: hidden;
+    }
+
+    .result-box {
+      width: 100%;
+      flex: 1;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 18px;
+      font-size: 17px;
+      line-height: 1.6;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      transition: border-color 0.3s;
+      -webkit-user-select: text;
+      user-select: text;
+    }
+    .result-box.active-border { border-color: var(--red); }
+    .result-box.done-border   { border-color: var(--accent); }
+    .result-box .placeholder  { color: var(--muted); font-size: 15px; }
+    .result-box .interim      { color: var(--muted); }
+
+    /* ── Mic button ── */
+    .mic-section {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 14px;
+      flex-shrink: 0;
+    }
+    .mic-btn {
+      width: 96px; height: 96px;
+      border-radius: 50%;
+      border: 2px solid var(--border);
+      background: var(--surface);
+      font-size: 40px;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: transform 0.15s, border-color 0.2s, background 0.2s;
+      flex-shrink: 0;
+    }
+    .mic-btn:active { transform: scale(0.92); }
+    .mic-btn.rec {
+      background: var(--red-dim);
+      border-color: var(--red);
+      animation: pulse 1.4s ease-in-out infinite;
+    }
+    .mic-btn.proc {
+      background: var(--accent-dim);
+      border-color: var(--accent);
+    }
+    @keyframes pulse {
+      0%,100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.35); }
+      50%      { box-shadow: 0 0 0 18px rgba(239,68,68,0); }
+    }
+    .mic-hint { font-size: 13px; color: var(--muted); }
+
+    /* ── Action row ── */
+    .actions {
+      display: flex; gap: 10px; width: 100%; flex-shrink: 0;
+    }
+    .actions.hidden { visibility: hidden; pointer-events: none; }
+    .act-btn {
+      flex: 1; padding: 13px 8px;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      font-size: 15px; font-weight: 500;
+      cursor: pointer; transition: opacity 0.15s;
+    }
+    .act-btn:active { opacity: 0.6; }
+    .act-btn.primary { background: var(--accent); border-color: var(--accent); }
+    .act-btn.ghost   { color: var(--muted); }
+
+    /* ── Stats screen ── */
+    .stats-body {
+      flex: 1; overflow-y: auto; padding: 16px 20px;
+      -webkit-overflow-scrolling: touch;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 18px 20px;
+      margin-bottom: 12px;
+    }
+    .card-label {
+      font-size: 11px; font-weight: 600;
+      letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--muted); margin-bottom: 12px;
+    }
+    .big-num { font-size: 40px; font-weight: 700; letter-spacing: -0.03em; color: var(--accent); }
+    .big-unit { font-size: 14px; color: var(--muted); margin-left: 4px; }
+    .row { display: flex; justify-content: space-between; font-size: 14px; color: #777; padding: 4px 0; }
+    .row span:last-child { color: #bbb; }
+    .badge {
+      display: inline-block; font-size: 11px; font-weight: 600;
+      padding: 2px 9px; border-radius: 20px;
+    }
+    .badge-mac    { background: rgba(124,58,237,0.2); color: #a78bfa; }
+    .badge-iphone { background: rgba(34,197,94,0.2);  color: #4ade80; }
+    .loading-stats { color: var(--muted); text-align: center; padding: 48px 0; font-size: 15px; }
+
+    /* ── Bottom nav ── */
+    .bottom-nav {
+      display: flex;
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      padding-bottom: var(--safe-b);
+      flex-shrink: 0;
+    }
+    .nav-btn {
+      flex: 1; padding: 10px 0 8px;
+      background: none; border: none; color: var(--muted);
+      font-size: 11px; cursor: pointer;
+      display: flex; flex-direction: column; align-items: center; gap: 3px;
+      transition: color 0.15s;
+    }
+    .nav-btn .icon { font-size: 22px; }
+    .nav-btn.active { color: var(--accent); }
+
+    /* ── Toast ── */
+    .toast {
+      position: fixed;
+      bottom: calc(72px + var(--safe-b) + 12px);
+      left: 50%; transform: translateX(-50%) translateY(10px);
+      background: #2a2a2a; color: #eee;
+      padding: 10px 22px; border-radius: 22px;
+      font-size: 14px; font-weight: 500;
+      opacity: 0; transition: all 0.25s;
+      white-space: nowrap; pointer-events: none; z-index: 99;
+    }
+    .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+    /* ── No-support banner ── */
+    .no-support-msg {
+      text-align: center; padding: 32px 24px; color: var(--muted); font-size: 15px; line-height: 1.6;
+    }
+    .no-support-msg strong { color: var(--text); display: block; font-size: 18px; margin-bottom: 8px; }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-left">
+    <h1>🎙 Talk</h1>
+    <p>Personal AI Dictation</p>
+  </div>
+  <div class="status-dot" id="dot"></div>
+</div>
+
+<!-- DICTATE -->
+<div class="screen active" id="screen-dictate">
+  <div class="dictate-body">
+
+    <div class="result-box" id="result-box">
+      <span class="placeholder">Tap the mic and start speaking…</span>
+    </div>
+
+    <div class="mic-section">
+      <button class="mic-btn" id="mic-btn" onclick="toggleRecording()">🎙</button>
+      <div class="mic-hint" id="mic-hint">Tap to record</div>
+    </div>
+
+    <div class="actions hidden" id="actions">
+      <button class="act-btn ghost" onclick="resetDictate()">Clear</button>
+      <button class="act-btn" onclick="copyResult()">Copy</button>
+      <button class="act-btn primary" onclick="shareResult()">Share</button>
+    </div>
+
+  </div>
+</div>
+
+<!-- STATS -->
+<div class="screen" id="screen-stats">
+  <div class="stats-body" id="stats-body">
+    <div class="loading-stats">Loading stats…</div>
+  </div>
+</div>
+
+<nav class="bottom-nav">
+  <button class="nav-btn active" id="nav-dictate" onclick="showScreen('dictate')">
+    <span class="icon">🎙</span><span>Dictate</span>
+  </button>
+  <button class="nav-btn" id="nav-stats" onclick="showScreen('stats')">
+    <span class="icon">📊</span><span>Stats</span>
+  </button>
+</nav>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const CLEANUP_URL  = 'https://xpidypwcpavjrgjjbauk.supabase.co/functions/v1/cleanup'
+const SUPABASE_URL = 'https://xpidypwcpavjrgjjbauk.supabase.co'
+const SUPABASE_KEY = 'sb_publishable_wERL6iWdLSiFWg1TBJtfuw_EGPRc6e4'
+
+// ── State ──────────────────────────────────────────────────────────
+let state = 'idle'   // idle | recording | processing | result
+let recognition = null
+let currentTranscript = ''
+let currentCleaned    = ''
+
+// ── Speech Recognition ─────────────────────────────────────────────
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition
+
+function toggleRecording() {
+  if (!SR) {
+    document.getElementById('result-box').innerHTML =
+      '<div class="no-support-msg"><strong>Not supported</strong>Use Safari on iOS 15+ or Chrome on Android.</div>'
+    return
+  }
+  if (state === 'idle' || state === 'result') startRecording()
+  else if (state === 'recording') stopRecording()
+}
+
+function startRecording() {
+  setState('recording')
+  currentTranscript = ''
+  setResultBox('<span style="color:#444">Listening…</span>', '')
+
+  recognition = new SR()
+  recognition.lang = 'en-US'
+  recognition.interimResults = true
+  recognition.continuous = false
+  recognition.maxAlternatives = 1
+
+  recognition.onresult = (e) => {
+    let final = '', interim = ''
+    for (const r of e.results) {
+      if (r.isFinal) final += r[0].transcript + ' '
+      else interim += r[0].transcript
+    }
+    currentTranscript = (currentTranscript + final).trim()
+    const display = currentTranscript + (interim ? ` <span class="interim">${interim}</span>` : '')
+    setResultBox(display || '<span style="color:#444">Listening…</span>', 'active-border')
+  }
+
+  recognition.onerror = (e) => {
+    if (e.error === 'no-speech') { stopRecording(); return }
+    setState('idle')
+    showToast('Mic error: ' + e.error)
+  }
+
+  recognition.onend = () => { if (state === 'recording') stopRecording() }
+  recognition.start()
+}
+
+function stopRecording() {
+  if (recognition) { try { recognition.stop() } catch (_) {} recognition = null }
+  if (!currentTranscript.trim()) { setState('idle'); return }
+  cleanup(currentTranscript)
+}
+
+async function cleanup(transcript) {
+  setState('processing')
+  setResultBox(transcript, '')
+
+  try {
+    const res = await fetch(CLEANUP_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${SUPABASE_KEY}`,
+        'apikey': SUPABASE_KEY,
+      },
+      body: JSON.stringify({ transcript }),
+    })
+    const json = await res.json()
+    if (!res.ok || json.error) throw new Error(json.error || `Server error ${res.status}`)
+    currentCleaned = json.cleaned
+    setResultBox(json.cleaned, 'done-border')
+    setState('result')
+  } catch (err) {
+    currentCleaned = transcript
+    setResultBox(
+      `<span style="color:#ef4444;font-size:13px">Cleanup failed — showing raw transcript</span><br><br>${transcript}`,
+      ''
+    )
+    setState('result')
+    showToast(err.message)
+  }
+}
+
+function setResultBox(html, borderClass) {
+  const box = document.getElementById('result-box')
+  box.innerHTML = html
+  box.className = 'result-box' + (borderClass ? ' ' + borderClass : '')
+}
+
+function copyResult() {
+  navigator.clipboard?.writeText(currentCleaned)
+    .then(() => showToast('Copied!'))
+    .catch(() => showToast('Copy failed'))
+}
+
+function shareResult() {
+  if (navigator.share) navigator.share({ text: currentCleaned }).catch(() => {})
+  else copyResult()
+}
+
+function resetDictate() {
+  setState('idle')
+  currentTranscript = currentCleaned = ''
+  setResultBox('<span class="placeholder">Tap the mic and start speaking…</span>', '')
+}
+
+// ── UI State machine ────────────────────────────────────────────────
+function setState(s) {
+  state = s
+  const btn     = document.getElementById('mic-btn')
+  const hint    = document.getElementById('mic-hint')
+  const actions = document.getElementById('actions')
+  const dot     = document.getElementById('dot')
+
+  btn.className = 'mic-btn'
+  actions.className = 'actions hidden'
+  dot.className = 'status-dot'
+
+  if (s === 'idle') {
+    btn.textContent = '🎙'; hint.textContent = 'Tap to record'
+  } else if (s === 'recording') {
+    btn.classList.add('rec'); btn.textContent = '⏹'
+    hint.textContent = 'Tap to stop'; dot.classList.add('live')
+  } else if (s === 'processing') {
+    btn.classList.add('proc'); btn.textContent = '✨'
+    hint.textContent = 'Cleaning up…'
+  } else if (s === 'result') {
+    btn.textContent = '🎙'; hint.textContent = 'Tap to record again'
+    actions.className = 'actions'
+  }
+}
+
+// ── Navigation ──────────────────────────────────────────────────────
+function showScreen(name) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'))
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'))
+  document.getElementById('screen-' + name).classList.add('active')
+  document.getElementById('nav-' + name).classList.add('active')
+  if (name === 'stats') loadStats()
+}
+
+// ── Stats ───────────────────────────────────────────────────────────
+async function loadStats() {
+  const body = document.getElementById('stats-body')
+  body.innerHTML = '<div class="loading-stats">Loading stats…</div>'
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/sessions?select=ts,words,device&order=ts.desc&limit=1000`,
+      { headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` } }
+    )
+    const rows = await res.json()
+
+    const now   = Date.now() / 1000
+    const today = new Date(); today.setHours(0,0,0,0)
+    const todayTs   = today.getTime() / 1000
+    const weekTs    = todayTs - 6 * 86400
+
+    let wToday = 0, wWeek = 0, wAll = 0, wMac = 0, wPhone = 0
+    let sToday = 0, sAll = rows.length
+
+    for (const r of rows) {
+      const w = r.words || 0
+      wAll += w
+      if (r.device === 'iphone') wPhone += w; else wMac += w
+      if (r.ts >= todayTs)  { wToday += w; sToday++ }
+      if (r.ts >= weekTs)   { wWeek  += w }
+    }
+
+    const fmt    = n => n.toLocaleString()
+    const fmtMin = m => m < 60 ? m + 'm' : Math.floor(m/60) + 'h ' + (m%60) + 'm'
+    const saved  = Math.round(wAll / 40)
+
+    body.innerHTML = `
+      <div class="card">
+        <div class="card-label">Words Dictated</div>
+        <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:12px">
+          <span class="big-num">${fmt(wToday)}</span>
+          <span class="big-unit">today</span>
+        </div>
+        <div class="row"><span>This week</span><span>${fmt(wWeek)}</span></div>
+        <div class="row"><span>All time</span><span>${fmt(wAll)}</span></div>
+      </div>
+
+      <div class="card">
+        <div class="card-label">Time Saved</div>
+        <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:12px">
+          <span class="big-num">${fmtMin(saved)}</span>
+        </div>
+        <div class="row"><span style="color:#333;font-size:12px">vs typing at 40 WPM</span><span></span></div>
+      </div>
+
+      <div class="card">
+        <div class="card-label">Sessions</div>
+        <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:12px">
+          <span class="big-num">${sToday}</span>
+          <span class="big-unit">today</span>
+        </div>
+        <div class="row"><span>Total</span><span>${fmt(sAll)}</span></div>
+        <div class="row">
+          <span>Mac</span>
+          <span><span class="badge badge-mac">${fmt(wMac)} words</span></span>
+        </div>
+        <div class="row">
+          <span>iPhone</span>
+          <span><span class="badge badge-iphone">${fmt(wPhone)} words</span></span>
+        </div>
+      </div>
+    `
+  } catch (e) {
+    body.innerHTML = `<div class="loading-stats" style="color:#ef4444">Could not load stats<br><small>${e.message}</small></div>`
+  }
+}
+
+// ── Toast ────────────────────────────────────────────────────────────
+function showToast(msg) {
+  const t = document.getElementById('toast')
+  t.textContent = msg; t.classList.add('show')
+  setTimeout(() => t.classList.remove('show'), 2200)
+}
+</script>
+</body>
+</html>

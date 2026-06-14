@@ -10,3 +10,5 @@ Whisper Flow -> WISPR Flow
 Hajreen -> Hajirwen
 Hajirin -> hajireen
 hajirwen -> Hajirwen
+WISPR -> Whisper
+interest -> data
