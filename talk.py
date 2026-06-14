@@ -608,30 +608,31 @@ class TalkApp(rumps.App):
             self._last_press_time = now
 
             if self._locked:
-                # Any second press after being in locked mode:
-                # if it's a quick double-tap, stop recording
+                # Double-tap while locked → stop recording
                 if dt < DOUBLE_TAP_MS:
                     self._locked = False
                     self.title = "🎙"
                     _do_stop()
-                # else: single tap while locked — ignore
+                # single tap while locked → ignore
 
-            elif dt < DOUBLE_TAP_MS and self._hold_timer is not None:
-                # Second tap of a start double-tap — enter locked recording mode
-                self._hold_timer.cancel()
-                self._hold_timer = None
+            elif dt < DOUBLE_TAP_MS:
+                # Second tap of a double-tap → enter locked recording mode
+                if self._hold_timer is not None:
+                    self._hold_timer.cancel()
+                    self._hold_timer = None
                 self._locked = True
                 _do_start()
 
             else:
-                # First press — start a short timer; if still held after HOLD_DELAY, begin recording
-                def _hold_fired():
-                    self._hold_timer = None
-                    if self._key_down and not self._locked:
-                        _do_start()
+                # First press — wait HOLD_DELAY before starting, to allow double-tap
+                if not self.recorder.stream and not self.busy:
+                    def _hold_fired():
+                        self._hold_timer = None
+                        if self._key_down and not self._locked:
+                            _do_start()
 
-                self._hold_timer = threading.Timer(HOLD_DELAY, _hold_fired)
-                self._hold_timer.start()
+                    self._hold_timer = threading.Timer(HOLD_DELAY, _hold_fired)
+                    self._hold_timer.start()
 
         def on_release(key):
             if key != PTT_KEY:
