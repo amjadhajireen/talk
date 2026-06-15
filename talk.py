@@ -529,12 +529,6 @@ def log_pair(raw, cleaned, latency):
 # Floating result panel — shown when no text field is focused at paste time
 # ---------------------------------------------------------------------------
 
-# Roles that accept keyboard text input (from macOS Accessibility API)
-_TEXT_ROLES = frozenset({
-    "AXTextField", "AXTextArea", "AXWebArea",
-    "AXComboBox", "AXSearchField", "AXScrollArea",
-})
-
 # Queue drained on the main thread by TalkApp's timer
 _panel_queue: list[str] = []
 # Keeps panel + controller alive so they aren't garbage-collected while open
@@ -556,20 +550,29 @@ class _PanelController(objc.lookUpClass('NSObject')):
 
 
 def _focused_is_text_input() -> bool:
-    """Return True if the frontmost app has a text-accepting element focused."""
+    """Return True when there's likely a place to paste into.
+
+    We can't enumerate every possible text-input role (Electron widgets,
+    custom apps, etc.), so we flip the logic: only return False when we're
+    CERTAIN nothing is focused — Desktop, Finder, or no focused element at all.
+    Everything else (any focused element in any real app) gets a paste attempt.
+    """
     try:
         r = subprocess.run(
             ["osascript", "-e",
              'tell application "System Events"\n'
              '  try\n'
-             '    return role of focused UI element of first process whose frontmost is true\n'
+             '    set p to first process whose frontmost is true\n'
+             '    if name of p is "Finder" then return "no"\n'
+             '    set el to focused UI element of p\n'
+             '    return "yes"\n'
              '  on error\n'
-             '    return ""\n'
+             '    return "no"\n'
              '  end try\n'
              'end tell'],
-            capture_output=True, text=True, timeout=1.0,
+            capture_output=True, text=True, timeout=1.5,
         )
-        return r.stdout.strip() in _TEXT_ROLES
+        return r.stdout.strip() == "yes"
     except Exception:
         return True  # default to paste on error
 
