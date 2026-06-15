@@ -8,7 +8,6 @@ the critical files/modules so those locks clear before talk.py runs.
 import os
 import sys
 import time
-import subprocess
 
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 
@@ -50,10 +49,7 @@ for attempt in range(30):
         else:
             raise
 
-# Files warmed — launch talk.py; retry if it crashes
-while True:
-    result = subprocess.run([PYTHON, TALK])
-    if result.returncode == 0:
-        sys.exit(0)
-    print("[start_talk] talk.py exited with code", result.returncode, "— retrying in 5s", flush=True)
-    time.sleep(5)
+# Replace this process with talk.py so it inherits the launchctl GUI session
+# (subprocess.run() child doesn't get menu bar / window server access).
+# launchctl's KeepAlive handles restarts if talk.py crashes.
+os.execv(PYTHON, [PYTHON, TALK])
