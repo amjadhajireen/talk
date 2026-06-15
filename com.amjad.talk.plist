@@ -24,6 +24,17 @@
         <false/>
     </dict>
 
+    <!-- Prevent rapid restart loops that cause pycache file-lock races -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <!-- Prevent pycache write contention on restart -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONDONTWRITEBYTECODE</key>
+        <string>1</string>
+    </dict>
+
     <key>StandardOutPath</key>
     <string>/Users/amjadhajireen/Library/Logs/talk.log</string>
     <key>StandardErrorPath</key>

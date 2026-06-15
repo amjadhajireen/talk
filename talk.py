@@ -44,6 +44,10 @@ LOG_PATH = os.path.join(os.path.dirname(__file__), "talk.log")  # raw->cleaned t
 # One per line in dictionary.txt (created next to this file), or edit here.
 DEFAULT_TERMS = ["Phoenix", "Suave", "Amjad", "Sidd", "LP", "ICP", "VARA"]
 
+# File-level locks — prevent deadlock when startup sync and _process() run concurrently
+_dict_lock = threading.Lock()
+_corrections_lock = threading.Lock()
+
 # Whisper commonly hallucinates these strings when given silence or noise.
 WHISPER_HALLUCINATIONS = {
     "thank you", "thank you.", "thanks", "thanks.",
@@ -79,8 +83,9 @@ Only include pronunciation-based mishearings — NOT punctuation, grammar, or fi
 def load_terms():
     path = os.path.join(os.path.dirname(__file__), "dictionary.txt")
     if os.path.exists(path):
-        with open(path) as f:
-            terms = [t.strip() for t in f if t.strip()]
+        with _dict_lock:
+            with open(path) as f:
+                terms = [t.strip() for t in f if t.strip()]
         if terms:
             return terms
     return DEFAULT_TERMS
@@ -114,24 +119,25 @@ def extract_spelled_words(text: str) -> list[str]:
 
 def save_to_dictionary(new_words: list[str]) -> None:
     """Append newly spelled words to dictionary.txt for future Whisper biasing."""
-    existing: set[str] = set()
-    if os.path.exists(DICTIONARY_PATH):
-        with open(DICTIONARY_PATH) as f:
-            existing = {line.strip().lower() for line in f if line.strip()}
-    else:
-        # First creation: seed with the defaults so load_terms() still gets them
-        with open(DICTIONARY_PATH, "w") as f:
-            for t in DEFAULT_TERMS:
-                f.write(t + "\n")
-        existing = {t.lower() for t in DEFAULT_TERMS}
+    with _dict_lock:
+        existing: set[str] = set()
+        if os.path.exists(DICTIONARY_PATH):
+            with open(DICTIONARY_PATH) as f:
+                existing = {line.strip().lower() for line in f if line.strip()}
+        else:
+            # First creation: seed with the defaults so load_terms() still gets them
+            with open(DICTIONARY_PATH, "w") as f:
+                for t in DEFAULT_TERMS:
+                    f.write(t + "\n")
+            existing = {t.lower() for t in DEFAULT_TERMS}
 
-    to_add = [w for w in new_words if w not in existing]
-    if to_add:
-        with open(DICTIONARY_PATH, "a") as f:
-            for w in to_add:
-                f.write(w + "\n")
-        for w in to_add:
-            _sync("dictionary", {"word": w})
+        to_add = [w for w in new_words if w not in existing]
+        if to_add:
+            with open(DICTIONARY_PATH, "a") as f:
+                for w in to_add:
+                    f.write(w + "\n")
+    for w in to_add:
+        _sync("dictionary", {"word": w})
 
 
 # ---------------------------------------------------------------------------
@@ -152,23 +158,25 @@ def load_corrections() -> list:
     if mtime == _corrections_mtime:
         return _corrections_cache
     corrections = []
-    with open(CORRECTIONS_PATH) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#") or "->" not in line:
-                continue
-            parts = line.split("->", 1)
-            if len(parts) != 2:
-                continue
-            wrong, correct = parts[0].strip(), parts[1].strip()
-            if wrong and correct:
-                try:
-                    corrections.append((
-                        re.compile(r"\b" + re.escape(wrong) + r"\b", re.IGNORECASE),
-                        correct,
-                    ))
-                except re.error:
-                    pass
+    with _corrections_lock:
+        with open(CORRECTIONS_PATH) as f:
+            lines = f.readlines()
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "->" not in line:
+            continue
+        parts = line.split("->", 1)
+        if len(parts) != 2:
+            continue
+        wrong, correct = parts[0].strip(), parts[1].strip()
+        if wrong and correct:
+            try:
+                corrections.append((
+                    re.compile(r"\b" + re.escape(wrong) + r"\b", re.IGNORECASE),
+                    correct,
+                ))
+            except re.error:
+                pass
     _corrections_cache = corrections
     _corrections_mtime = mtime
     return corrections
@@ -570,42 +578,44 @@ def _startup_sync():
         # Merge remote corrections into corrections.txt
         result = sb.table("corrections").select("wrong, correct").execute()
         if result.data:
-            existing: set = set()
-            if os.path.exists(CORRECTIONS_PATH):
-                with open(CORRECTIONS_PATH) as f:
-                    for line in f:
-                        line = line.strip()
-                        if line and not line.startswith("#") and "->" in line:
-                            existing.add(line.split("->", 1)[0].strip().lower())
-            new_lines = [
-                f"{r['wrong']} -> {r['correct']}"
-                for r in result.data
-                if r["wrong"].lower() not in existing
-            ]
-            if new_lines:
-                with open(CORRECTIONS_PATH, "a") as f:
-                    for line in new_lines:
-                        f.write(line + "\n")
-                global _corrections_mtime
-                _corrections_mtime = 0.0
-                print(f"Startup sync: +{len(new_lines)} corrections", flush=True)
+            with _corrections_lock:
+                existing: set = set()
+                if os.path.exists(CORRECTIONS_PATH):
+                    with open(CORRECTIONS_PATH) as f:
+                        for line in f:
+                            line = line.strip()
+                            if line and not line.startswith("#") and "->" in line:
+                                existing.add(line.split("->", 1)[0].strip().lower())
+                new_lines = [
+                    f"{r['wrong']} -> {r['correct']}"
+                    for r in result.data
+                    if r["wrong"].lower() not in existing
+                ]
+                if new_lines:
+                    with open(CORRECTIONS_PATH, "a") as f:
+                        for line in new_lines:
+                            f.write(line + "\n")
+                    global _corrections_mtime
+                    _corrections_mtime = 0.0
+                    print(f"Startup sync: +{len(new_lines)} corrections", flush=True)
 
         # Merge remote dictionary into dictionary.txt
         dresult = sb.table("dictionary").select("word").execute()
         if dresult.data:
-            existing_words: set = set()
-            if os.path.exists(DICTIONARY_PATH):
-                with open(DICTIONARY_PATH) as f:
-                    existing_words = {l.strip().lower() for l in f if l.strip()}
-            new_words = [
-                r["word"] for r in dresult.data
-                if r["word"].lower() not in existing_words
-            ]
-            if new_words:
-                with open(DICTIONARY_PATH, "a") as f:
-                    for w in new_words:
-                        f.write(w + "\n")
-                print(f"Startup sync: +{len(new_words)} dictionary words", flush=True)
+            with _dict_lock:
+                existing_words: set = set()
+                if os.path.exists(DICTIONARY_PATH):
+                    with open(DICTIONARY_PATH) as f:
+                        existing_words = {l.strip().lower() for l in f if l.strip()}
+                new_words = [
+                    r["word"] for r in dresult.data
+                    if r["word"].lower() not in existing_words
+                ]
+                if new_words:
+                    with open(DICTIONARY_PATH, "a") as f:
+                        for w in new_words:
+                            f.write(w + "\n")
+                    print(f"Startup sync: +{len(new_words)} dictionary words", flush=True)
 
     except Exception as e:
         print(f"Startup sync error: {e}", flush=True)
@@ -632,7 +642,6 @@ class TalkApp(rumps.App):
         self._hold_timer = None
         print("  hotkey listener...", flush=True)
         self._start_hotkey_listener()
-        threading.Thread(target=_startup_sync, daemon=True).start()
         print("  __init__ done", flush=True)
 
     @rumps.clicked("📊 View Stats")
@@ -809,6 +818,8 @@ if __name__ == "__main__":
     print("load_env...", flush=True)
     load_env()
     _acquire_lock()
+    print("startup sync...", flush=True)
+    _startup_sync()
     print("creating TalkApp...", flush=True)
     app = TalkApp()
     print("calling run()...", flush=True)
