@@ -30,6 +30,15 @@ from pynput import keyboard
 import mlx_whisper
 import anthropic
 
+import objc
+from AppKit import (
+    NSApp, NSPanel, NSButton, NSScrollView, NSTextView, NSTextField,
+    NSMakeRect, NSFont, NSColor, NSBackingStoreBuffered,
+    NSFloatingWindowLevel,
+    NSWindowStyleMaskTitled, NSWindowStyleMaskClosable, NSWindowStyleMaskResizable,
+    NSBezelStyleRounded,
+)
+
 # ---------------------------------------------------------------------------
 # Config — tweak these
 # ---------------------------------------------------------------------------
@@ -516,6 +525,103 @@ def log_pair(raw, cleaned, latency):
     _sync("sessions", entry)
 
 
+# ---------------------------------------------------------------------------
+# Floating result panel — shown when no text field is focused at paste time
+# ---------------------------------------------------------------------------
+
+# Roles that accept keyboard text input (from macOS Accessibility API)
+_TEXT_ROLES = frozenset({
+    "AXTextField", "AXTextArea", "AXWebArea",
+    "AXComboBox", "AXSearchField", "AXScrollArea",
+})
+
+# Queue drained on the main thread by TalkApp's timer
+_panel_queue: list[str] = []
+# Keeps panel + controller alive so they aren't garbage-collected while open
+_active_panels: list = []
+
+
+class _PanelController(objc.lookUpClass('NSObject')):
+    """Button target for the floating result panel."""
+
+    _panel = None
+
+    def closePanel_(self, sender):
+        if self._panel:
+            self._panel.close()
+            try:
+                _active_panels.remove(self)
+            except ValueError:
+                pass
+
+
+def _focused_is_text_input() -> bool:
+    """Return True if the frontmost app has a text-accepting element focused."""
+    try:
+        r = subprocess.run(
+            ["osascript", "-e",
+             'tell application "System Events"\n'
+             '  try\n'
+             '    return role of focused UI element of first process whose frontmost is true\n'
+             '  on error\n'
+             '    return ""\n'
+             '  end try\n'
+             'end tell'],
+            capture_output=True, text=True, timeout=1.0,
+        )
+        return r.stdout.strip() in _TEXT_ROLES
+    except Exception:
+        return True  # default to paste on error
+
+
+def _build_result_panel(text: str) -> None:
+    """Create and show a floating panel with the transcribed text.
+    Text is already in the clipboard. MUST be called from the main thread.
+    """
+    W, H = 500, 220
+
+    panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+        NSMakeRect(0, 0, W, H),
+        NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable,
+        NSBackingStoreBuffered,
+        False,
+    )
+    panel.setTitle_("Talk  ·  copied to clipboard")
+    panel.setLevel_(NSFloatingWindowLevel)
+    panel.setReleasedWhenClosed_(False)
+    panel.center()
+
+    cv = panel.contentView()
+
+    # Scrollable, selectable text view
+    scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(12, 52, W - 24, H - 76))
+    scroll.setHasVerticalScroller_(True)
+    scroll.setBorderType_(2)  # NSGrooveBorder
+    scroll.setAutoresizingMask_(2 | 16)  # width + height sizable
+    tv = NSTextView.alloc().initWithFrame_(NSMakeRect(0, 0, W - 24, H - 76))
+    tv.setString_(text)
+    tv.setFont_(NSFont.systemFontOfSize_(14))
+    tv.setEditable_(False)
+    tv.setSelectable_(True)
+    tv.setAutoresizingMask_(2 | 16)
+    scroll.setDocumentView_(tv)
+    cv.addSubview_(scroll)
+
+    # "Close" button
+    ctrl = _PanelController.alloc().init()
+    ctrl._panel = panel
+    _active_panels.append(ctrl)
+
+    close_btn = NSButton.alloc().initWithFrame_(NSMakeRect(W - 96, 12, 84, 30))
+    close_btn.setTitle_("Close")
+    close_btn.setBezelStyle_(NSBezelStyleRounded)
+    close_btn.setTarget_(ctrl)
+    close_btn.setAction_("closePanel:")
+    cv.addSubview_(close_btn)
+
+    panel.makeKeyAndOrderFront_(None)
+
+
 def paste(text):
     # Bug 2 fix: save and restore clipboard so we don't clobber the user's copy
     prev = subprocess.run("pbpaste", capture_output=True).stdout
@@ -672,6 +778,12 @@ class TalkApp(rumps.App):
         dashboard = os.path.join(os.path.dirname(__file__), "dashboard.py")
         subprocess.Popen([os.path.join(os.path.dirname(__file__), ".venv/bin/python"), dashboard])
 
+    @rumps.timer(0.1)
+    def _drain_panel_queue(self, _):
+        """Main-thread timer: build any panels queued by _process()."""
+        while _panel_queue:
+            _build_result_panel(_panel_queue.pop(0))
+
     def _start_hotkey_listener(self):
         DOUBLE_TAP_MS = 0.35  # seconds between presses to count as double-tap
         HOLD_DELAY    = 0.28  # seconds held before switching to hold-mode recording
@@ -809,7 +921,12 @@ class TalkApp(rumps.App):
             cleaned = clean_with_claude(self.client, raw, app_style)
             log_pair(raw, cleaned, time.time() - t0)
             if cleaned:
-                paste(cleaned)
+                if _focused_is_text_input():
+                    paste(cleaned)
+                else:
+                    # No text field focused — put in clipboard and show floating panel
+                    subprocess.run("pbcopy", input=cleaned.encode(), check=True)
+                    _panel_queue.append(cleaned)
                 self.last_cleaned = cleaned
         except Exception as e:
             import traceback
