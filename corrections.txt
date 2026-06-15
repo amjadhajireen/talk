@@ -12,3 +12,9 @@ Hajirin -> hajireen
 hajirwen -> Hajirwen
 WISPR -> Whisper
 interest -> data
+surround -> Suave
+CERAVE -> CeraVe
+Github -> GitHub
+Cork -> Coke
+layaway -> layover
+Grock -> Groq
