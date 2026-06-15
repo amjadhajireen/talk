@@ -550,29 +550,21 @@ class _PanelController(objc.lookUpClass('NSObject')):
 
 
 def _focused_is_text_input() -> bool:
-    """Return True when there's likely a place to paste into.
+    """Return True when a real app (not Finder/Desktop) is frontmost.
 
-    We can't enumerate every possible text-input role (Electron widgets,
-    custom apps, etc.), so we flip the logic: only return False when we're
-    CERTAIN nothing is focused — Desktop, Finder, or no focused element at all.
-    Everything else (any focused element in any real app) gets a paste attempt.
+    macOS 26's `focused UI element` AppleScript property is broken in launchctl
+    contexts (syntax error -2741). Instead we check the frontmost process name:
+    if it's a real app, assume it can receive paste; show the panel only when
+    the user is on the Desktop or in Finder.
     """
     try:
         r = subprocess.run(
             ["osascript", "-e",
-             'tell application "System Events"\n'
-             '  try\n'
-             '    set p to first process whose frontmost is true\n'
-             '    if name of p is "Finder" then return "no"\n'
-             '    set el to focused UI element of p\n'
-             '    return "yes"\n'
-             '  on error\n'
-             '    return "no"\n'
-             '  end try\n'
-             'end tell'],
+             "tell application \"System Events\" to return name of first process whose frontmost is true"],
             capture_output=True, text=True, timeout=1.5,
         )
-        return r.stdout.strip() == "yes"
+        name = r.stdout.strip()
+        return bool(name) and name not in {"Finder", "Python"}
     except Exception:
         return True  # default to paste on error
 
