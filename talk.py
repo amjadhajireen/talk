@@ -81,10 +81,9 @@ Only include pronunciation-based mishearings — NOT punctuation, grammar, or fi
 
 
 def load_terms():
-    path = os.path.join(os.path.dirname(__file__), "dictionary.txt")
-    if os.path.exists(path):
+    if os.path.exists(DICTIONARY_PATH):
         with _dict_lock:
-            with open(path) as f:
+            with open(DICTIONARY_PATH) as f:
                 terms = [t.strip() for t in f if t.strip()]
         if terms:
             return terms
@@ -102,7 +101,22 @@ def is_hallucination(text):
 # Matches hyphen-separated single letters: K-I-C-K, P-H-O-N-E, C-L-A-U-D-E
 # Requires 3+ letters (avoids matching common hyphenated text like "A-B test").
 _SPELLED_RE = re.compile(r'\b[A-Za-z](?:-[A-Za-z]){2,}\b')
-DICTIONARY_PATH = os.path.join(os.path.dirname(__file__), "dictionary.txt")
+
+# Runtime data lives in ~/Library/Application Support/Talk/ so LaunchAgent can always read it
+DATA_DIR = os.path.expanduser("~/Library/Application Support/Talk")
+DICTIONARY_PATH = os.path.join(DATA_DIR, "dictionary.txt")
+
+
+def _init_data_dir() -> None:
+    """Create DATA_DIR and seed it from the project directory on first run."""
+    import shutil
+    os.makedirs(DATA_DIR, exist_ok=True)
+    _here = os.path.dirname(os.path.abspath(__file__))
+    for fname in [".env", "dictionary.txt", "corrections.txt"]:
+        dst = os.path.join(DATA_DIR, fname)
+        src = os.path.join(_here, fname)
+        if not os.path.exists(dst) and os.path.exists(src):
+            shutil.copy2(src, dst)
 
 
 def extract_spelled_words(text: str) -> list[str]:
@@ -143,7 +157,7 @@ def save_to_dictionary(new_words: list[str]) -> None:
 # ---------------------------------------------------------------------------
 # Corrections — fix Whisper mishearings before Claude sees the transcript
 # ---------------------------------------------------------------------------
-CORRECTIONS_PATH = os.path.join(os.path.dirname(__file__), "corrections.txt")
+CORRECTIONS_PATH = os.path.join(DATA_DIR, "corrections.txt")
 _corrections_cache: list = []
 _corrections_mtime: float = 0.0
 
@@ -517,17 +531,26 @@ def paste(text):
 
 
 def load_env():
-    """Load KEY=value lines from a local .env file into os.environ (if not already set)."""
-    path = os.path.join(os.path.dirname(__file__), ".env")
-    if not os.path.exists(path):
+    """Load KEY=value lines from .env into os.environ (if not already set).
+
+    Checks ~/Library/Application Support/Talk/.env first (accessible by LaunchAgent),
+    then falls back to the project directory .env.
+    """
+    candidates = [
+        os.path.join(DATA_DIR, ".env"),
+        os.path.join(os.path.dirname(__file__), ".env"),
+    ]
+    path = next((p for p in candidates if os.path.exists(p)), None)
+    if path is None:
         return
     with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, val = line.split("=", 1)
-            os.environ.setdefault(key.strip(), val.strip().strip('"').strip("'"))
+        content = f.read()
+    for line in content.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, val = line.split("=", 1)
+        os.environ.setdefault(key.strip(), val.strip().strip('"').strip("'"))
 
 
 # ---------------------------------------------------------------------------
@@ -814,7 +837,32 @@ def _acquire_lock():
     atexit.register(lambda: os.path.exists(lock) and os.unlink(lock))
 
 
+def _warmup_edeadlk(max_attempts: int = 5, delay: float = 1.0) -> None:
+    """Pre-touch runtime files to catch any transient EDEADLK before proceeding."""
+    import ssl as _ssl
+    for attempt in range(max_attempts):
+        try:
+            for p in [
+                os.path.join(DATA_DIR, ".env"),
+                DICTIONARY_PATH,
+                CORRECTIONS_PATH,
+            ]:
+                if os.path.exists(p):
+                    with open(p) as _f:
+                        _f.read()
+            _ssl.create_default_context()
+            return
+        except OSError as e:
+            if e.errno == 11 and attempt < max_attempts - 1:
+                print(f"[warmup] EDEADLK on attempt {attempt + 1}, retrying in {delay:.0f}s...", flush=True)
+                time.sleep(delay)
+            else:
+                raise
+
+
 if __name__ == "__main__":
+    _init_data_dir()
+    _warmup_edeadlk()
     print("load_env...", flush=True)
     load_env()
     _acquire_lock()

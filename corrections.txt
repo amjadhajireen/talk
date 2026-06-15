@@ -18,3 +18,5 @@ Github -> GitHub
 Cork -> Coke
 layaway -> layover
 Grock -> Groq
+ban -> banking
+dock -> doc
