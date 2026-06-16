@@ -807,12 +807,10 @@ class TalkApp(rumps.App):
             self._last_press_time = now
 
             if self._locked:
-                # Double-tap while locked → stop recording
-                if dt < DOUBLE_TAP_MS:
-                    self._locked = False
-                    self.title = "🎙"
-                    _do_stop()
-                # single tap while locked → ignore
+                # Any press while locked → stop recording
+                self._locked = False
+                self.title = "🎙"
+                _do_stop()
 
             elif dt < DOUBLE_TAP_MS:
                 # Second tap of a double-tap → enter locked recording mode
