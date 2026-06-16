@@ -9,6 +9,9 @@ Launched with `python -S` to skip site.py (which reads pyvenv.cfg from
 ~/Documents/ and hits EDEADLK before any of our code runs). We add
 site-packages to sys.path manually below instead.
 
+site-packages is symlinked to ~/Library/Application Support/Talk/site-packages/
+so all imports resolve to ~/Library/ (XProtect-safe, no EDEADLK).
+
 Uses runpy.run_path() so the same process/GUI session is reused (menu bar works).
 """
 import os
@@ -16,18 +19,13 @@ import sys
 
 # python -S skips site.py, so sys.path won't include the venv's site-packages.
 # Add them now so all subsequent imports work normally.
+# The symlink .venv/lib/python3.12/site-packages -> ~/Library/Application Support/Talk/site-packages/
+# means all package files resolve to ~/Library/ which is EDEADLK-safe.
 _here = os.path.dirname(os.path.abspath(__file__))
 _site_packages = os.path.join(_here, ".venv", "lib", "python3.12", "site-packages")
 
-# Packages that XProtect tends to lock from launchctl are pre-copied to ~/Library
-# (outside ~/Documents' TCC restriction). Load those first so imports find the
-# safe copy before falling through to the venv in ~/Documents.
-_safe_lib = os.path.expanduser("~/Library/Application Support/Talk/lib")
-if os.path.isdir(_safe_lib) and _safe_lib not in sys.path:
-    sys.path.insert(0, _safe_lib)
-
 if _site_packages not in sys.path:
-    sys.path.insert(1, _site_packages)
+    sys.path.insert(0, _site_packages)
 
 import time
 import runpy
