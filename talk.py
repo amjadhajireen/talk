@@ -759,11 +759,9 @@ class TalkApp(rumps.App):
         self.busy = False
         self.last_cleaned = ""  # tracks the last pasted text for delete commands
         print("  menu...", flush=True)
-        self.menu = ["Hold · or double-tap · Right-Option to dictate", None, "📊 View Stats", None]
+        self.menu = ["Press Right-Option to start/stop recording", None, "📊 View Stats", None]
         self._key_down = False
-        self._locked = False        # double-tap toggle mode
-        self._last_press_time = 0.0
-        self._hold_timer = None
+        self._recording = False  # toggle state
         print("  hotkey listener...", flush=True)
         self._start_hotkey_listener()
         print("  __init__ done", flush=True)
@@ -779,17 +777,22 @@ class TalkApp(rumps.App):
         while _panel_queue:
             _build_result_panel(_panel_queue.pop(0))
 
-    def _start_hotkey_listener(self):
-        DOUBLE_TAP_MS = 0.35  # seconds between presses to count as double-tap
-        HOLD_DELAY    = 0.28  # seconds held before switching to hold-mode recording
+    @rumps.timer(1.5)
+    def _startup_notify(self, sender):
+        sender.stop()  # fire once
+        rumps.notification("Talk", "Ready 🎙", "Press Right-Option to start recording", sound=False)
 
+    def _start_hotkey_listener(self):
         def _do_start():
             if not self.recorder.stream and not self.busy:
+                self._recording = True
                 self.title = "🔴"
                 self.recorder.start()
+                rumps.notification("Talk", "Recording…", "Press Right-Option again to stop", sound=False)
 
         def _do_stop():
             if self.recorder.stream:
+                self._recording = False
                 audio = self.recorder.stop()
                 self.busy = True
                 app_style = get_app_style_hint(get_active_app_name())
@@ -802,52 +805,17 @@ class TalkApp(rumps.App):
                 return  # ignore OS key-repeat events
             self._key_down = True
 
-            now = time.time()
-            dt = now - self._last_press_time
-            self._last_press_time = now
-
-            if self._locked:
-                # Any press while locked → stop recording
-                self._locked = False
+            if self._recording:
+                self._recording = False
                 self.title = "🎙"
                 _do_stop()
-
-            elif dt < DOUBLE_TAP_MS:
-                # Second tap of a double-tap → enter locked recording mode
-                if self._hold_timer is not None:
-                    self._hold_timer.cancel()
-                    self._hold_timer = None
-                if not self.recorder.stream and not self.busy:
-                    self._locked = True
-                    _do_start()
-
             else:
-                # First press — wait HOLD_DELAY before starting, to allow double-tap
-                if not self.recorder.stream and not self.busy:
-                    def _hold_fired():
-                        self._hold_timer = None
-                        if self._key_down and not self._locked:
-                            _do_start()
-
-                    self._hold_timer = threading.Timer(HOLD_DELAY, _hold_fired)
-                    self._hold_timer.start()
+                _do_start()
 
         def on_release(key):
             if key != PTT_KEY:
                 return
             self._key_down = False
-
-            if self._hold_timer is not None:
-                # Released before hold timer fired — was a quick tap (first of potential double-tap)
-                self._hold_timer.cancel()
-                self._hold_timer = None
-                return  # don't stop anything; wait for potential second tap
-
-            if self._locked:
-                return  # in toggle mode, release does nothing
-
-            # Hold mode: key released after recording started
-            _do_stop()
 
         listener = keyboard.Listener(on_press=on_press, on_release=on_release)
         listener.daemon = True
