@@ -759,9 +759,11 @@ class TalkApp(rumps.App):
         self.busy = False
         self.last_cleaned = ""  # tracks the last pasted text for delete commands
         print("  menu...", flush=True)
-        self.menu = ["Press Right-Option to start/stop recording", None, "📊 View Stats", None]
+        self.menu = ["Hold Right-Option to record  ·  double-tap for hands-free", None, "📊 View Stats", None]
         self._key_down = False
-        self._recording = False  # toggle state
+        self._locked = False        # double-tap locked (hands-free) mode
+        self._last_press_time = 0.0
+        self._hold_timer = None
         print("  hotkey listener...", flush=True)
         self._start_hotkey_listener()
         print("  __init__ done", flush=True)
@@ -783,16 +785,17 @@ class TalkApp(rumps.App):
         rumps.notification("Talk", "Ready 🎙", "Press Right-Option to start recording", sound=False)
 
     def _start_hotkey_listener(self):
+        DOUBLE_TAP_MS = 0.35  # max gap between two presses to count as double-tap
+        HOLD_DELAY    = 0.28  # seconds held before hold-mode recording starts
+
         def _do_start():
             if not self.recorder.stream and not self.busy:
-                self._recording = True
                 self.title = "🔴"
                 self.recorder.start()
-                rumps.notification("Talk", "Recording…", "Press Right-Option again to stop", sound=False)
 
         def _do_stop():
             if self.recorder.stream:
-                self._recording = False
+                self._locked = False
                 audio = self.recorder.stop()
                 self.busy = True
                 app_style = get_app_style_hint(get_active_app_name())
@@ -805,17 +808,59 @@ class TalkApp(rumps.App):
                 return  # ignore OS key-repeat events
             self._key_down = True
 
-            if self._recording:
-                self._recording = False
-                self.title = "🎙"
-                _do_stop()
+            now = time.time()
+            dt = now - self._last_press_time
+            self._last_press_time = now
+
+            if dt < DOUBLE_TAP_MS:
+                # Double-tap detected
+                if self._hold_timer is not None:
+                    self._hold_timer.cancel()
+                    self._hold_timer = None
+
+                if self._locked:
+                    # Already in locked mode → double-tap stops it
+                    self._locked = False
+                    self.title = "🎙"
+                    _do_stop()
+                elif not self.recorder.stream and not self.busy:
+                    # Start locked (hands-free) mode
+                    self._locked = True
+                    _do_start()
+                    rumps.notification("Talk", "Recording…", "Double-tap Right-Option to stop", sound=False)
             else:
-                _do_start()
+                # First press — start hold timer; if still held after HOLD_DELAY, begin recording
+                if self._hold_timer is not None:
+                    self._hold_timer.cancel()
+                    self._hold_timer = None
+
+                if not self._locked and not self.recorder.stream and not self.busy:
+                    def _hold_fired():
+                        self._hold_timer = None
+                        if self._key_down and not self._locked:
+                            _do_start()
+
+                    self._hold_timer = threading.Timer(HOLD_DELAY, _hold_fired)
+                    self._hold_timer.start()
 
         def on_release(key):
             if key != PTT_KEY:
                 return
             self._key_down = False
+
+            if self._hold_timer is not None:
+                # Released before hold delay — quick tap, first of potential double-tap
+                self._hold_timer.cancel()
+                self._hold_timer = None
+                return
+
+            if self._locked:
+                return  # locked mode: release does nothing, wait for double-tap
+
+            # Hold mode: release stops recording
+            if self.recorder.stream:
+                self.title = "🎙"
+                _do_stop()
 
         listener = keyboard.Listener(on_press=on_press, on_release=on_release)
         listener.daemon = True
@@ -882,12 +927,15 @@ class TalkApp(rumps.App):
             cleaned = clean_with_claude(self.client, raw, app_style)
             log_pair(raw, cleaned, time.time() - t0)
             if cleaned:
+                preview = cleaned[:60] + ("…" if len(cleaned) > 60 else "")
                 if _focused_is_text_input():
                     paste(cleaned)
+                    rumps.notification("Talk", "Pasted ✓", preview, sound=False)
                 else:
                     # No text field focused — put in clipboard and show floating panel
                     subprocess.run("pbcopy", input=cleaned.encode(), check=True)
                     _panel_queue.append(cleaned)
+                    rumps.notification("Talk", "Copied to clipboard", preview, sound=False)
                 self.last_cleaned = cleaned
         except Exception as e:
             import traceback
