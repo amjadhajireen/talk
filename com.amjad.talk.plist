@@ -7,7 +7,10 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/amjadhajireen/Documents/Claude Cowork/talk/.venv/bin/python</string>
+        <!-- Use the Homebrew Python directly (not the venv symlink) so Python startup
+             never reads pyvenv.cfg from ~/Documents/, which gets EDEADLK from launchctl.
+             PYTHONPATH below makes venv packages visible. -->
+        <string>/opt/homebrew/opt/python@3.12/bin/python3.12</string>
         <string>/Users/amjadhajireen/Documents/Claude Cowork/talk/start_talk.py</string>
     </array>
 
@@ -24,10 +27,17 @@
         <false/>
     </dict>
 
+    <!-- Wait 60s between crash-restarts so macOS releases venv file locks -->
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+
     <key>EnvironmentVariables</key>
     <dict>
         <key>PYTHONDONTWRITEBYTECODE</key>
         <string>1</string>
+        <!-- Expose venv packages without triggering pyvenv.cfg reads at Python startup -->
+        <key>PYTHONPATH</key>
+        <string>/Users/amjadhajireen/Documents/Claude Cowork/talk/.venv/lib/python3.12/site-packages</string>
         <!-- Use macOS system SSL bundle instead of certifi (certifi is in ~/Documents, blocked by TCC) -->
         <key>SSL_CERT_FILE</key>
         <string>/etc/ssl/cert.pem</string>
