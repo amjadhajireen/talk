@@ -5,16 +5,32 @@ macOS system services briefly lock files on first launchctl access,
 causing EDEADLK. Warm-up pre-touches the critical files/modules so
 those locks clear before talk.py runs.
 
-Uses runpy.run_path() instead of os.execv() so that:
-  - The same Python interpreter process is reused (no fresh startup EDEADLK)
-  - The launchctl GUI session is preserved (menu bar icon works)
+Launched with `python -S` to skip site.py (which reads pyvenv.cfg from
+~/Documents/ and hits EDEADLK before any of our code runs). We add
+site-packages to sys.path manually below instead.
+
+Uses runpy.run_path() so the same process/GUI session is reused (menu bar works).
 """
 import os
 import sys
+
+# python -S skips site.py, so sys.path won't include the venv's site-packages.
+# Add them now so all subsequent imports work normally.
+_here = os.path.dirname(os.path.abspath(__file__))
+_site_packages = os.path.join(_here, ".venv", "lib", "python3.12", "site-packages")
+
+# Packages that XProtect tends to lock from launchctl are pre-copied to ~/Library
+# (outside ~/Documents' TCC restriction). Load those first so imports find the
+# safe copy before falling through to the venv in ~/Documents.
+_safe_lib = os.path.expanduser("~/Library/Application Support/Talk/lib")
+if os.path.isdir(_safe_lib) and _safe_lib not in sys.path:
+    sys.path.insert(0, _safe_lib)
+
+if _site_packages not in sys.path:
+    sys.path.insert(1, _site_packages)
+
 import time
 import runpy
-
-os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.expanduser("~/Library/Application Support/Talk")
@@ -27,7 +43,11 @@ def _try_read(path):
 
 
 def warmup():
-    """Verify DATA_DIR files are readable. Raises OSError(11) if locked."""
+    """Touch critical files and imports. Raises OSError(11) if any are locked.
+
+    Repeatedly reading venv files signals to macOS (XProtect/Spotlight) that
+    this process is legitimate, eventually releasing the EDEADLK locks.
+    """
     for fname in [".env", "dictionary.txt", "corrections.txt"]:
         p = os.path.join(DATA_DIR, fname)
         if os.path.exists(p):
@@ -36,8 +56,10 @@ def warmup():
     import ssl
     ssl.create_default_context()
 
+    import mlx_whisper  # noqa: F401 — reads many venv files, clearing the locks
 
-for attempt in range(10):
+
+for attempt in range(60):  # up to 3 minutes
     try:
         warmup()
         break
@@ -48,23 +70,13 @@ for attempt in range(10):
         else:
             raise
 
-# Run talk.py in this same process so GUI session and interpreter are preserved.
-# Retry on EDEADLK from venv imports — locks usually clear within 60s.
-for _attempt in range(10):
-    try:
-        runpy.run_path(TALK, run_name="__main__")
-        sys.exit(0)
-    except SystemExit as e:
-        sys.exit(e.code)
-    except OSError as e:
-        if e.errno == 11 and _attempt < 9:
-            print(f"[start_talk] talk.py import EDEADLK on attempt {_attempt + 1}, retrying in 30s...", flush=True)
-            time.sleep(30)
-        else:
-            import traceback
-            traceback.print_exc()
-            sys.exit(1)
-    except Exception:
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+# Run talk.py in this same process so GUI session and interpreter are preserved
+try:
+    runpy.run_path(TALK, run_name="__main__")
+    sys.exit(0)
+except SystemExit as e:
+    sys.exit(e.code)
+except Exception:
+    import traceback
+    traceback.print_exc()
+    sys.exit(1)
