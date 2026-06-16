@@ -299,20 +299,30 @@ end tell"""
 # ---------------------------------------------------------------------------
 class Recorder:
     def __init__(self, samplerate=SAMPLE_RATE):
-        self.samplerate = samplerate
+        self.samplerate = samplerate  # target rate for Whisper (16kHz)
         self.frames = []
-        self._lock = threading.Lock()  # Bug 5 fix: protect frames across threads
+        self._lock = threading.Lock()
         self.stream = None
+        self._device_rate = samplerate  # actual device rate; updated in start()
 
     def _callback(self, indata, *_):
         with self._lock:
             self.frames.append(indata.copy())
 
+    def _get_device_rate(self) -> int:
+        """Return the default input device's native sample rate."""
+        try:
+            info = sd.query_devices(kind='input')
+            return int(info['default_samplerate'])
+        except Exception:
+            return self.samplerate
+
     def start(self):
+        self._device_rate = self._get_device_rate()
         with self._lock:
             self.frames = []
         self.stream = sd.InputStream(
-            samplerate=self.samplerate, channels=1, dtype="float32",
+            samplerate=self._device_rate, channels=1, dtype="float32",
             callback=self._callback,
         )
         self.stream.start()
@@ -327,7 +337,16 @@ class Recorder:
             frames = list(self.frames)
         if not frames:
             return None
-        return np.concatenate(frames, axis=0).flatten()
+        audio = np.concatenate(frames, axis=0).flatten()
+        # Resample to Whisper's expected 16kHz if device uses a different rate
+        if self._device_rate != self.samplerate:
+            target_len = int(len(audio) * self.samplerate / self._device_rate)
+            audio = np.interp(
+                np.linspace(0, len(audio) - 1, target_len),
+                np.arange(len(audio)),
+                audio,
+            ).astype(np.float32)
+        return audio
 
 
 # ---------------------------------------------------------------------------
@@ -790,8 +809,13 @@ class TalkApp(rumps.App):
 
         def _do_start():
             if not self.recorder.stream and not self.busy:
-                self.title = "🔴"
-                self.recorder.start()
+                try:
+                    self.title = "🔴"
+                    self.recorder.start()
+                except Exception as e:
+                    self.title = "🎙"
+                    print(f"[Talk] audio open error: {e}", flush=True)
+                    rumps.notification("Talk", "Mic Error", str(e)[:80])
 
         def _do_stop():
             if self.recorder.stream:
