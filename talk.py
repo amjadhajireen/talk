@@ -309,23 +309,41 @@ class Recorder:
         with self._lock:
             self.frames.append(indata.copy())
 
-    def _get_device_rate(self) -> int:
-        """Return the default input device's native sample rate."""
-        try:
-            info = sd.query_devices(kind='input')
-            return int(info['default_samplerate'])
-        except Exception:
-            return self.samplerate
-
-    def start(self):
-        self._device_rate = self._get_device_rate()
-        with self._lock:
-            self.frames = []
-        self.stream = sd.InputStream(
-            samplerate=self._device_rate, channels=1, dtype="float32",
+    def _open_stream(self, device_idx, rate):
+        stream = sd.InputStream(
+            device=device_idx, samplerate=rate, channels=1, dtype="float32",
             callback=self._callback,
         )
-        self.stream.start()
+        stream.start()
+        return stream, rate
+
+    def start(self):
+        with self._lock:
+            self.frames = []
+
+        # Try devices in preference order: default first, then wired/built-in fallbacks
+        all_devs = sd.query_devices()
+        default_idx = sd.default.device[0]  # default input index
+
+        candidates = [default_idx]
+        for i, d in enumerate(all_devs):
+            if i != default_idx and d['max_input_channels'] > 0:
+                candidates.append(i)
+
+        last_err = None
+        for idx in candidates:
+            try:
+                info = all_devs[idx]
+                rate = int(info['default_samplerate'])
+                self.stream, self._device_rate = self._open_stream(idx, rate)
+                print(f"[Talk] recording on device [{idx}] {info['name']!r} at {rate}Hz", flush=True)
+                return
+            except Exception as e:
+                print(f"[Talk] device [{idx}] failed: {e}", flush=True)
+                last_err = e
+                continue
+
+        raise RuntimeError(f"No working audio input found: {last_err}")
 
     def stop(self):
         if self.stream is None:
