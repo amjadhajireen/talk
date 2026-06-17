@@ -321,14 +321,24 @@ class Recorder:
         with self._lock:
             self.frames = []
 
-        # Try devices in preference order: default first, then wired/built-in fallbacks
+        # Prefer built-in / wired mics over Bluetooth so AirPods stay in A2DP (music quality).
+        # BT mics force a mode switch to SCO which degrades concurrent audio playback.
         all_devs = sd.query_devices()
-        default_idx = sd.default.device[0]  # default input index
+        default_idx = sd.default.device[0]
 
-        candidates = [default_idx]
+        def _is_bt(dev):
+            n = dev['name'].lower()
+            return any(k in n for k in ('airpods', 'bluetooth', 'iphone', 'ipad'))
+
+        built_in, others = [], []
         for i, d in enumerate(all_devs):
-            if i != default_idx and d['max_input_channels'] > 0:
-                candidates.append(i)
+            if d['max_input_channels'] > 0:
+                (others if _is_bt(d) else built_in).append(i)
+
+        # built-in first, then BT as fallback
+        candidates = built_in + others
+        if not candidates:
+            candidates = [default_idx]
 
         last_err = None
         for idx in candidates:
@@ -911,10 +921,13 @@ class TalkApp(rumps.App):
     def _process(self, audio, app_style: str = ""):
         try:
             if audio is None or len(audio) < SAMPLE_RATE * MIN_SECONDS:
+                print(f"[Talk] audio too short or None (len={len(audio) if audio is not None else None})", flush=True)
                 return
             self.title = "🔊"
             t0 = time.time()
+            print(f"[Talk] transcribing {len(audio)/SAMPLE_RATE:.1f}s audio…", flush=True)
             raw = transcribe(audio)
+            print(f"[Talk] raw={raw!r:.80}", flush=True)
             if not raw or is_hallucination(raw):
                 return
             raw = apply_corrections(raw)
